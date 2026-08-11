@@ -1,0 +1,5 @@
+{
+  "blueprint_assets": true,
+  "version": "1.0.0",
+  "note": "blueprint skill 包的母版资产标记，bp.mjs 据此判断自己能否执行 init/upgrade。项目内拷贝不含此文件。"
+}

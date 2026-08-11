@@ -1,0 +1,29 @@
+project: {{PROJECT}}
+type: backend                # backend | frontend | fullstack
+
+# {domain} 与 {service} 由活动 id 的对应段替换,{capability} 由能力 id 的第二段替换
+layout:
+  backend: "{{LAYOUT_BACKEND}}"
+  domain: "{{LAYOUT_DOMAIN}}"
+
+# 全局可读路径,追加到每次 bp scope 的输出末尾
+always_readable:
+  - src/shared/
+  - src/types/
+
+# 按域覆盖 layout,例如 billing 在遗留目录里
+overrides: {}
+
+verify:
+  backend: "{{VERIFY_BACKEND}}"
+
+db:
+  dialect: {{DB_DIALECT}}
+  migration_table: {{DB_MIGRATION_TABLE}}
+
+commit:
+  type_rules:
+    has_new_activity: feat
+    only_modified: fix
+
+blueprint_version: "{{VERSION}}"

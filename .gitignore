@@ -1,0 +1,8 @@
+# 本仓库自用 dogfood 时的软链/安装产物。
+# 必须忽略：skills/ 和 .claude/skills/ 都是 npx skills 的标准搜索位置，
+# 两边同时存在会让同一个 skill 被重复发现。
+.claude/
+.agents/
+
+node_modules/
+.DS_Store
