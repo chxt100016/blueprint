@@ -2,15 +2,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseYaml, toYamlFile, readFileSafe, walkFiles, exists } from './parse.mjs';
-import { bpPath, isCapabilityId, splitCapabilityId, resolveScope } from './config.mjs';
+import { bpPath, isDomainId, splitDomainId, resolveScope } from './config.mjs';
 
 export function codemapPath(root, id) {
-  if (isCapabilityId(id)) {
-    const [domain, capability] = splitCapabilityId(id);
-    return bpPath(root, 'codemap', `@${domain}`, `${capability}.yaml`);
+  if (isDomainId(id)) {
+    const [group, name] = splitDomainId(id);
+    return bpPath(root, 'codemap', `@${group}`, `${name}.yaml`);
   }
-  const [domain, service, activity] = String(id).split('.');
-  return bpPath(root, 'codemap', domain, service, `${activity}.yaml`);
+  const [capability, service, activity] = String(id).split('.');
+  return bpPath(root, 'codemap', capability, service, `${activity}.yaml`);
 }
 
 export function loadCodemap(root, id) {

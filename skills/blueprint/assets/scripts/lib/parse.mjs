@@ -249,6 +249,48 @@ export function sectionsText(sections, titles) {
     .join('\n\n');
 }
 
+// --------------------------------------------------------------- 模板规格
+
+/** 取章节体开头的 `<!-- bp: ... -->` 标记。 */
+function parseSectionMeta(body) {
+  const out = {};
+  const m = String(body ?? '').match(/<!--\s*bp:\s*(.+?)\s*-->/);
+  if (!m) return out;
+  for (const tok of m[1].split(/[,\s]+/).filter(Boolean)) {
+    const [k, v] = tok.split('=');
+    if (k === 'no-hash') out.noHash = true;
+    else if (k === 'numbered') out.numbered = v || 'R';
+  }
+  return out;
+}
+
+/**
+ * 把一份模板解析成该文档类型的校验规格。模板是章节结构与编号规则的唯一真相源,
+ * 校验、哈希取材、编号前缀全部由此推导——改模板即改校验,不必动代码。
+ *
+ * 章节标记写在二级标题下的 HTML 注释里:
+ *   <!-- bp: no-hash -->       该章节不参与哈希(如「实现提示」)
+ *   <!-- bp: numbered=A -->    该章节需形如 A1 A2 的连续编号
+ *
+ * front-matter 的键即允许出现的字段;`entry` 的子键即该 type 下必填的入口。
+ */
+export function parseTemplateSpec(raw) {
+  const { fm, hasFm, body } = parseFrontMatter(raw);
+  const { sections } = splitSections(body);
+  const titles = [];
+  const hashed = [];
+  let numbered = null;
+  for (const s of sections) {
+    titles.push(s.title);
+    const meta = parseSectionMeta(s.body);
+    if (!meta.noHash) hashed.push(s.title);
+    if (meta.numbered) numbered = { section: s.title, prefix: meta.numbered };
+  }
+  const fmFields = hasFm ? Object.keys(fm) : [];
+  const entry = fm && typeof fm.entry === 'object' && fm.entry ? Object.keys(fm.entry) : [];
+  return { titles, hashed, numbered, fmFields, entryFields: entry };
+}
+
 // ----------------------------------------------------------------- mermaid
 
 export function extractFences(text) {
@@ -264,31 +306,6 @@ export function extractFences(text) {
   return out;
 }
 
-/**
- * 提取 mermaid flowchart 的节点。
- * 返回 { nodes: [{id, text, terminal}], hasNodes }
- * 终止节点为 `((...))` 形式,不参与与流程步骤的一一对应校验。
- */
-export function parseFlowchartNodes(code) {
-  const found = new Map();
-  const re = /([A-Za-z_][\w-]*)\s*(\(\(|\[\[|\[\(|\{\{|\[|\(|\{|>)([^\]\)\}]*?)(\)\)|\]\]|\)\]|\}\}|\]|\)|\})/g;
-  let m;
-  while ((m = re.exec(code)) !== null) {
-    const [, id, open, label] = m;
-    const text = stripLabel(label);
-    if (!text) continue;
-    const terminal = open === '((' || open === '([';
-    if (!found.has(id)) found.set(id, { id, text, terminal });
-  }
-  return [...found.values()];
-}
-
-function stripLabel(label) {
-  let s = String(label).trim();
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) s = s.slice(1, -1);
-  return s.trim();
-}
-
 /** 取「流程」章节的顶层有序步骤文本(缩进项为分支说明,不算步骤)。 */
 export function parseOrderedSteps(body) {
   const out = [];
@@ -300,20 +317,6 @@ export function parseOrderedSteps(body) {
     if (m) out.push({ no: Number(m[1]), text: m[2].trim() });
   }
   return out;
-}
-
-/**
- * 步骤文字与节点文字的比较基准:取主干。
- * 步骤允许在主干后用冒号或逗号追加补充说明(「计算应付金额:商品总价 → 满减」),
- * 图上只画主干,比较时两边同样截断,因此仍然是逐字一致。
- */
-export function stepKey(text) {
-  return String(text)
-    .normalize('NFC')
-    .split(/[:：,，]/)[0]
-    .replace(/[。.；;\s]+$/, '')
-    .replace(/\s+/g, '')
-    .trim();
 }
 
 /** 取「活动划分」条目:`- <slug>  <summary>` */
@@ -328,14 +331,16 @@ export function parseActivityList(body) {
   return out;
 }
 
-/** 取「行为规则」的编号序列。 */
-export function parseRules(body) {
+/** 取编号章节的编号序列。prefix 由模板的 `numbered=` 标记给出。 */
+export function parseRules(body, prefix = 'R') {
+  const p = String(prefix).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^\\s*(?:[-*]\\s*)?\\*{0,2}${p}(\\d+)\\*{0,2}[\\s.:、]`);
   const out = [];
   let fence = false;
   for (const line of String(body ?? '').split('\n')) {
     if (/^\s*```/.test(line)) { fence = !fence; continue; }
     if (fence) continue;
-    const m = line.match(/^\s*(?:[-*]\s*)?\*{0,2}R(\d+)\*{0,2}[\s.:、]/);
+    const m = line.match(re);
     if (m) out.push(Number(m[1]));
   }
   return out;

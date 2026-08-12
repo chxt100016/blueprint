@@ -1,5 +1,11 @@
 // 仓库模型:一次性把 product / spec / domain / lock / todo 读进内存,
 // 其余模块(schema / stage / codemap)全部基于这个模型工作。
+//
+// 命名对应五层业务架构:
+//   products    product/<capability>.md         商业能力(文件)+ 业务服务(二级标题锚点)
+//   services    spec/<capability>/<service>/    业务流程
+//   activities  .../<activity>/activity.md      业务活动
+//   domains     domain/<domain>/<name>/         领域能力(横切层)
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -8,11 +14,9 @@ import {
 } from './parse.mjs';
 import { hashAnchor, hashDoc, omit } from './hash.mjs';
 import { parseReview } from './review.mjs';
-import {
-  bpPath, loadConfig, ACTIVITY_HASHED_SECTIONS, CAPABILITY_HASHED_SECTIONS,
-} from './config.mjs';
+import { bpPath, loadConfig } from './config.mjs';
 
-const HASHED_FLOW_SECTIONS = ['流程图', '流程', '分支与异常', '活动划分'];
+export const LOCK_VERSION = 3;
 
 function readDoc(file) {
   const raw = readFileSafe(file);
@@ -31,18 +35,20 @@ function readReview(file) {
 export function loadLock(root) {
   const file = bpPath(root, 'lock.json');
   const raw = readFileSafe(file);
-  if (raw === null) return { version: 2, services: {}, activities: {}, capabilities: {} };
+  if (raw === null) return { version: LOCK_VERSION, services: {}, activities: {}, domains: {} };
   let lock;
   try { lock = JSON.parse(raw); } catch (e) { throw new Error(`lock.json 解析失败: ${e.message}`); }
   lock.services = lock.services || {};
   lock.activities = lock.activities || {};
-  lock.capabilities = lock.capabilities || {};
+  lock.domains = lock.domains || {};
+  lock.rejected_domains = lock.rejected_domains || {};
   return lock;
 }
 
 export function saveLock(root, lock) {
   const file = bpPath(root, 'lock.json');
   const tmp = file + '.tmp';
+  lock.version = LOCK_VERSION;
   fs.writeFileSync(tmp, JSON.stringify(lock, null, 2) + '\n');
   fs.renameSync(tmp, file);
 }
@@ -70,19 +76,19 @@ function loadProducts(root) {
 
 // --------------------------------------------------------------------- spec
 
-function loadServices(root, cfg, capabilityUses) {
+function loadServices(root, cfg, domainUses) {
   const specDir = bpPath(root, 'spec');
   const services = new Map();
   const activities = new Map();
-  for (const domain of listDirs(specDir)) {
-    for (const slug of listDirs(path.join(specDir, domain))) {
-      const dir = path.join(specDir, domain, slug);
-      const id = `${domain}.${slug}`;
+  for (const capability of listDirs(specDir)) {
+    for (const slug of listDirs(path.join(specDir, capability))) {
+      const dir = path.join(specDir, capability, slug);
+      const id = `${capability}.${slug}`;
       const flowPath = path.join(dir, 'flow.md');
       const doc = readDoc(flowPath);
       const reviewPath = path.join(dir, 'flow.review.md');
       const service = {
-        id, domain, slug, dir,
+        id, capability, slug, dir,
         rel: path.relative(root, dir),
         flowPath, flowRel: path.relative(root, flowPath),
         exists: !!doc,
@@ -92,7 +98,7 @@ function loadServices(root, cfg, capabilityUses) {
         product: doc?.fm?.product || null,
         hash: doc ? hashDoc({
           fm: omit(doc.fm, ['title']),
-          text: sectionsText(doc.sections, HASHED_FLOW_SECTIONS),
+          text: sectionsText(doc.sections, cfg.templates.flow.hashed),
         }) : null,
         reviewPath,
         reviewRel: path.relative(root, reviewPath),
@@ -110,12 +116,12 @@ function loadServices(root, cfg, capabilityUses) {
         const aid = `${id}.${aslug}`;
         const areviewPath = path.join(adir, 'activity.review.md');
         const activity = {
-          id: aid, service: id, domain, slug: aslug, dir: adir,
+          id: aid, service: id, capability, slug: aslug, dir: adir,
           file: afile, rel: path.relative(root, afile),
           fm: adoc.fm, sections: adoc.sections, raw: adoc.raw,
           hash: hashDoc({
             fm: omit(adoc.fm, ['title']),
-            text: sectionsText(adoc.sections, ACTIVITY_HASHED_SECTIONS(cfg)),
+            text: sectionsText(adoc.sections, cfg.templates.activity.hashed),
           }),
           depends_on: toArray(adoc.fm.depends_on),
           uses: toArray(adoc.fm.uses),
@@ -127,8 +133,8 @@ function loadServices(root, cfg, capabilityUses) {
         activities.set(aid, activity);
         service.activities.push(aid);
         for (const u of activity.uses) {
-          if (!capabilityUses.has(u)) capabilityUses.set(u, []);
-          capabilityUses.get(u).push(aid);
+          if (!domainUses.has(u)) domainUses.set(u, []);
+          domainUses.get(u).push(aid);
         }
       }
     }
@@ -138,38 +144,38 @@ function loadServices(root, cfg, capabilityUses) {
 
 // ------------------------------------------------------------------- domain
 
-function loadCapabilities(root, capabilityUses) {
+function loadDomains(root, cfg, domainUses) {
   const domainDir = bpPath(root, 'domain');
-  const capabilities = new Map();
-  for (const domain of listDirs(domainDir)) {
-    for (const slug of listDirs(path.join(domainDir, domain))) {
-      const dir = path.join(domainDir, domain, slug);
-      const file = path.join(dir, 'capability.md');
+  const domains = new Map();
+  for (const group of listDirs(domainDir)) {
+    for (const name of listDirs(path.join(domainDir, group))) {
+      const dir = path.join(domainDir, group, name);
+      const file = path.join(dir, 'domain.md');
       if (!exists(file)) continue;
       const doc = readDoc(file);
-      const id = `@${domain}.${slug}`;
-      const reviewPath = path.join(dir, 'capability.review.md');
-      capabilities.set(id, {
-        id, domain, slug, dir, file, rel: path.relative(root, file),
+      const id = `@${group}.${name}`;
+      const reviewPath = path.join(dir, 'domain.review.md');
+      domains.set(id, {
+        id, group, name, slug: name, dir, file, rel: path.relative(root, file),
         fm: doc.fm, sections: doc.sections, raw: doc.raw,
         hash: hashDoc({
           fm: omit(doc.fm, ['title']),
-          text: sectionsText(doc.sections, CAPABILITY_HASHED_SECTIONS),
+          text: sectionsText(doc.sections, cfg.templates.domain.hashed),
         }),
         tables: toArray(doc.fm.tables),
         reviewPath,
         reviewRel: path.relative(root, reviewPath),
         review: readReview(reviewPath),
-        usedBy: capabilityUses.get(id) || [],
+        usedBy: domainUses.get(id) || [],
       });
     }
   }
-  // 被引用但文档不存在的能力
+  // 被 uses 引用但文档不存在的领域能力
   const missing = [];
-  for (const [id, users] of capabilityUses) {
-    if (!capabilities.has(id)) missing.push({ id, usedBy: users });
+  for (const [id, users] of domainUses) {
+    if (!domains.has(id)) missing.push({ id, usedBy: users });
   }
-  return { capabilities, missingCapabilities: missing };
+  return { domains, missingDomains: missing };
 }
 
 // --------------------------------------------------------------------- todo
@@ -196,16 +202,16 @@ function loadTodos(root) {
 
 export function loadRepo(root, cfg = null) {
   const config = cfg || loadConfig(root);
-  const capabilityUses = new Map();
+  const domainUses = new Map();
   const products = loadProducts(root);
-  const { services, activities } = loadServices(root, config, capabilityUses);
-  const { capabilities, missingCapabilities } = loadCapabilities(root, capabilityUses);
+  const { services, activities } = loadServices(root, config, domainUses);
+  const { domains, missingDomains } = loadDomains(root, config, domainUses);
   const lock = loadLock(root);
   const todos = loadTodos(root);
 
   const repo = {
-    root, cfg: config, products, services, activities, capabilities,
-    missingCapabilities, lock, todos,
+    root, cfg: config, products, services, activities, domains,
+    missingDomains, lock, todos,
     anchorUsers: new Map(),
   };
 
@@ -222,63 +228,69 @@ export function toArray(v) {
   return Array.isArray(v) ? v : [v];
 }
 
-/** 解析 `<domain>#<二级标题>` 形式的锚点引用。 */
+/** 解析 `<capability>#<二级标题>` 形式的锚点引用。 */
 export function anchorOf(repo, ref) {
   if (!ref || typeof ref !== 'string') return null;
   const idx = ref.indexOf('#');
   if (idx === -1) return null;
-  const domain = ref.slice(0, idx);
+  const capability = ref.slice(0, idx);
   const title = ref.slice(idx + 1);
-  const product = repo.products.get(domain);
+  const product = repo.products.get(capability);
   if (!product) return null;
   const anchor = product.anchors.get(title);
   if (!anchor) return null;
-  return { product, anchor, domain, title };
+  return { product, anchor, capability, title };
 }
 
-/** 该服务下的全部 review 文件(flow + activities + 本服务引用的 capabilities)。 */
+/** 该服务下的全部澄清记录(flow + 各活动)。领域能力的记录不挂在服务上。 */
 export function serviceReviews(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
   const out = [];
-  if (svc.review) out.push({ kind: 'flow', id: serviceId, label: 'flow.review', path: svc.reviewPath, review: svc.review });
+  if (svc.review) out.push({ kind: 'flow', id: serviceId, label: 'flow', path: svc.reviewPath, review: svc.review });
   for (const aid of svc.activities) {
     const a = repo.activities.get(aid);
     if (a?.review) out.push({ kind: 'activity', id: aid, label: a.slug, path: a.reviewPath, review: a.review });
   }
-  for (const cap of relatedCapabilities(repo, serviceId)) {
-    if (cap.review) out.push({ kind: 'capability', id: cap.id, label: cap.id, path: cap.reviewPath, review: cap.review });
-  }
   return out;
 }
 
-/** 本服务活动 uses 引用到的能力(已有文档的)。 */
-export function relatedCapabilities(repo, serviceId) {
+/** 本服务活动 uses 引用到的领域能力(已有文档的)。 */
+export function relatedDomains(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
   const ids = new Set();
   for (const aid of svc.activities) {
     for (const u of repo.activities.get(aid)?.uses || []) ids.add(u);
   }
-  return [...ids].map((id) => repo.capabilities.get(id)).filter(Boolean);
+  return [...ids].map((id) => repo.domains.get(id)).filter(Boolean);
 }
 
+/** 本服务 uses 引用了但还没有文档的领域能力。 */
 export function missingForService(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
   const out = new Set();
   for (const aid of svc.activities) {
     for (const u of repo.activities.get(aid)?.uses || []) {
-      if (!repo.capabilities.has(u)) out.add(u);
+      if (!repo.domains.has(u)) out.add(u);
     }
   }
   return [...out];
 }
 
+/** 引用该领域能力的服务集合。 */
+export function servicesOfDomain(repo, domain) {
+  const set = new Set(domain.usedBy.map((a) => a.split('.').slice(0, 2).join('.')));
+  const introduced = repo.lock.domains?.[domain.id]?.spec?.introduced_by;
+  if (introduced) set.add(introduced);
+  return [...set];
+}
+
 export function findObject(repo, id) {
   if (repo.services.has(id)) return { kind: 'service', obj: repo.services.get(id) };
   if (repo.activities.has(id)) return { kind: 'activity', obj: repo.activities.get(id) };
-  if (repo.capabilities.has(id)) return { kind: 'capability', obj: repo.capabilities.get(id) };
+  if (repo.domains.has(id)) return { kind: 'domain', obj: repo.domains.get(id) };
   if (repo.products.has(id)) return { kind: 'product', obj: repo.products.get(id) };
   return null;
 }

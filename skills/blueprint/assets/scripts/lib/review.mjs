@@ -1,49 +1,47 @@
-// review 文件的解析、编号分配与条目迁移。
-// 状态判定只看两件确定性的事:区是否为空、条目下有没有 `>` 行。
+// 澄清记录(.review.md)的解析与读写。
+//
+// 这个文件由 bp review 命令独占读写,skill 不解析它、不拼它的格式、不分配编号。
+// 一条澄清的生命周期只有三步,每步对应一条命令:
+//
+//   ask      AI 想到一个拿不准的点     → 分配编号,进「待答复」
+//   answer   人给了答复                → 带答复迁入「已答复」
+//   resolve  AI 把答复落进文档         → 补一条落点
+//
+// 「待答复」非空 = 还有事没问清;「已答复」里有条目没落点 = AI 说处理了但没说落在哪。
+// 两者任一非空都不许 approve——后者是 AI 声称改了却没改的唯一捕获时机。
 import { splitSections } from './parse.mjs';
 
-export const AREA_PENDING = '待确定';
-export const AREA_CHANGES = '改动建议';
-export const AREA_RESOLVED = '已解决';
-export const AREAS = [AREA_PENDING, AREA_CHANGES, AREA_RESOLVED];
+export const AREA_PENDING = '待答复';
+export const AREA_ANSWERED = '已答复';
+export const AREAS = [AREA_PENDING, AREA_ANSWERED];
 
-/** 状态。 */
-export const STATE_APPROVABLE = 'approvable';
-export const STATE_AI = 'ai';
-export const STATE_HUMAN = 'human';
+export const HEADER_NOTE = '<!-- 本文件由 bp review 命令维护,请勿手工编辑 -->';
 
 function parseItems(body) {
   const lines = String(body ?? '').split('\n');
-  const items = [];
-  const lead = [];
+  const groups = [];
   let cur = null;
   for (const line of lines) {
     if (/^-\s+/.test(line)) {
-      if (cur) items.push(cur);
-      cur = { lines: [line] };
+      if (cur) groups.push(cur);
+      cur = [line];
       continue;
     }
-    if (cur) cur.lines.push(line);
-    else lead.push(line);
+    if (cur) cur.push(line);
   }
-  if (cur) items.push(cur);
-  return {
-    lead: lead.join('\n').trim(),
-    items: items.map((it) => buildItem(it.lines)),
-  };
+  if (cur) groups.push(cur);
+  return groups.map(buildItem);
 }
 
 function buildItem(lines) {
-  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-  const raw = lines.join('\n');
-  const first = lines[0];
-  const m = first.match(/\[([QC])(\d*)\]/);
-  const prefix = m ? m[1] : null;
-  const number = m && m[2] ? Number(m[2]) : null;
+  const body = [...lines];
+  while (body.length && body[body.length - 1].trim() === '') body.pop();
+  const first = body[0] || '';
+  const m = first.match(/\[Q(\d+)\]/);
   const answers = [];
   const notes = [];
   const textLines = [];
-  lines.forEach((line, idx) => {
+  body.forEach((line, idx) => {
     const t = line.trim();
     if (idx > 0 && t.startsWith('>')) { answers.push(t.replace(/^>\s?/, '')); return; }
     if (idx > 0 && t.startsWith('→')) { notes.push(t.replace(/^→\s?/, '')); return; }
@@ -51,146 +49,144 @@ function buildItem(lines) {
   });
   const text = textLines.join('\n').trim();
   return {
-    raw,
-    prefix,
-    number,
-    text,
-    title: text.replace(/~~/g, '').replace(/\[[QC]\d*\]\s*/, '').trim(),
+    number: m ? Number(m[1]) : null,
     label: m ? m[0] : null,
-    answers,
-    notes,
+    text,
+    title: text.replace(/\[Q\d+\]\s*/, '').trim(),
+    answer: answers.join('\n'),
+    note: notes.join(' / '),
     hasAnswer: answers.length > 0,
+    hasNote: notes.length > 0,
   };
+}
+
+function renderItem(item) {
+  const out = [`- ${item.text}`];
+  for (const line of String(item.answer || '').split('\n')) {
+    if (line.trim()) out.push(`  > ${line.trim()}`);
+  }
+  if (item.note) out.push(`  → ${item.note}`);
+  return out.join('\n');
 }
 
 export function parseReview(text) {
   const src = String(text ?? '').replace(/\r\n?/g, '\n');
   const { preamble, sections } = splitSections(src);
-  const header = preamble.trim();
   const areas = {};
   for (const name of AREAS) {
     const sec = sections.find((s) => s.title === name);
-    areas[name] = sec ? parseItems(sec.body) : { lead: '', items: [] };
+    areas[name] = sec ? parseItems(sec.body) : [];
   }
-  const extra = sections.filter((s) => !AREAS.includes(s.title));
-  return { header, areas, extra, raw: src };
-}
-
-export function reviewState(review) {
-  if (!review) return STATE_APPROVABLE;
-  const pending = review.areas[AREA_PENDING].items;
-  const changes = review.areas[AREA_CHANGES].items;
-  if (!pending.length && !changes.length) return STATE_APPROVABLE;
-  if (changes.length || pending.some((i) => i.hasAnswer)) return STATE_AI;
-  return STATE_HUMAN;
-}
-
-/** 待 AI 处理的条目 */
-export function aiItems(review) {
-  if (!review) return [];
-  return [
-    ...review.areas[AREA_CHANGES].items,
-    ...review.areas[AREA_PENDING].items.filter((i) => i.hasAnswer),
-  ];
-}
-
-/** 待人答复的条目 */
-export function humanItems(review) {
-  if (!review) return [];
-  return review.areas[AREA_PENDING].items.filter((i) => !i.hasAnswer);
-}
-
-export function openCount(review) {
-  if (!review) return 0;
-  return review.areas[AREA_PENDING].items.length + review.areas[AREA_CHANGES].items.length;
-}
-
-function maxNumber(review) {
-  let max = 0;
-  for (const name of AREAS) {
-    for (const it of review.areas[name].items) {
-      if (it.number && it.number > max) max = it.number;
-    }
-    // 正文里可能出现「已转 [Q5]」这类引用,也纳入取最大值,避免编号重用
-    const all = review.areas[name].items.map((i) => i.raw).join('\n');
-    for (const m of all.matchAll(/\[[QC](\d+)\]/g)) {
-      const n = Number(m[1]);
-      if (n > max) max = n;
-    }
-  }
-  return max;
-}
-
-/** 为占位条目分配编号。返回 { text, assigned } */
-export function sweep(review) {
-  let next = maxNumber(review) + 1;
-  const assigned = [];
-  for (const [area, prefix] of [[AREA_PENDING, 'Q'], [AREA_CHANGES, 'C']]) {
-    for (const item of review.areas[area].items) {
-      if (item.number) continue;
-      const num = next++;
-      const label = `[${item.prefix || prefix}${num}]`;
-      if (item.label) {
-        item.raw = item.raw.replace(item.label, label);
-        item.text = item.text.replace(item.label, label);
-      } else {
-        item.raw = item.raw.replace(/^-\s+/, `- ${label} `);
-        item.text = `${label} ${item.text}`;
-      }
-      item.number = num;
-      item.prefix = item.prefix || prefix;
-      item.label = label;
-      assigned.push({ label, title: item.title, area });
-    }
-  }
-  return { text: render(review), assigned };
-}
-
-/** 把条目迁移到已解决区。 */
-export function resolveItem(review, number, note) {
-  const num = Number(number);
-  for (const area of [AREA_PENDING, AREA_CHANGES]) {
-    const list = review.areas[area].items;
-    const idx = list.findIndex((i) => i.number === num);
-    if (idx === -1) continue;
-    const [item] = list.splice(idx, 1);
-    const lines = [];
-    const head = item.text.split('\n');
-    lines.push(`- ~~${head[0].trim()}~~`);
-    for (const extra of head.slice(1)) {
-      if (extra.trim()) lines.push(`  ${extra.trim()}`);
-    }
-    for (const a of item.answers) lines.push(`  > ${a}`);
-    for (const n of item.notes) lines.push(`  → ${n}`);
-    if (note) lines.push(`  → ${note}`);
-    review.areas[AREA_RESOLVED].items.push(buildItem(lines));
-    return { text: render(review), item };
-  }
-  const done = review.areas[AREA_RESOLVED].items.find((i) => i.number === num);
-  if (done) throw new Error(`条目 ${num} 已在「已解决」区`);
-  throw new Error(`条目 ${num} 不存在于「待确定」或「改动建议」区`);
-}
-
-/** 追加一条待确定条目(占位编号,由 sweep 分配)。 */
-export function addPending(review, text) {
-  review.areas[AREA_PENDING].items.push(buildItem([`- [Q] ${text}`]));
-  return render(review);
+  return { header: preamble.trim(), areas, raw: src };
 }
 
 export function render(review) {
   const out = [];
   if (review.header) out.push(review.header, '');
   for (const name of AREAS) {
-    const area = review.areas[name];
     out.push(`## ${name}`, '');
-    if (area.lead) out.push(area.lead, '');
-    for (const item of area.items) out.push(item.raw.trimEnd(), '');
+    for (const item of review.areas[name]) out.push(renderItem(item), '');
   }
-  for (const sec of review.extra) out.push(sec.raw.trim(), '');
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
-export function emptyReview(id, template) {
-  if (template) return template.replace(/<id>/g, id);
-  return `# ${id} 确认\n\n## 待确定\n\n## 改动建议\n\n## 已解决\n`;
+export function emptyReview(id) {
+  return `# ${id} 澄清记录\n\n${HEADER_NOTE}\n\n## ${AREA_PENDING}\n\n## ${AREA_ANSWERED}\n`;
+}
+
+// ------------------------------------------------------------------- 状态
+
+export function pendingItems(review) {
+  return review ? review.areas[AREA_PENDING] : [];
+}
+
+export function answeredItems(review) {
+  return review ? review.areas[AREA_ANSWERED] : [];
+}
+
+/** 已答复但还没写落点的条目:AI 说处理了,但没说落在文档哪里。 */
+export function unresolvedItems(review) {
+  return answeredItems(review).filter((i) => !i.hasNote);
+}
+
+/** 可以 approve 吗:没有待答复,且每条已答复都写了落点。 */
+export function isClean(review) {
+  if (!review) return true;
+  return pendingItems(review).length === 0 && unresolvedItems(review).length === 0;
+}
+
+export function openCount(review) {
+  if (!review) return 0;
+  return pendingItems(review).length + unresolvedItems(review).length;
+}
+
+/** 一句话状态,给 scan 的 detail 用。 */
+export function stateLabel(review) {
+  if (!review) return '';
+  const p = pendingItems(review).length;
+  const u = unresolvedItems(review).length;
+  const parts = [];
+  if (p) parts.push(`${p} 项待答复`);
+  if (u) parts.push(`${u} 项已答复未落实`);
+  return parts.join(', ');
+}
+
+// ------------------------------------------------------------------- 变更
+
+function maxNumber(review) {
+  let max = 0;
+  for (const name of AREAS) {
+    for (const it of review.areas[name]) {
+      if (it.number && it.number > max) max = it.number;
+    }
+  }
+  return max;
+}
+
+/** 追加一条待答复的澄清问题,返回分配到的编号。 */
+export function addQuestion(review, text) {
+  const clean = String(text ?? '').trim().replace(/\s*\n\s*/g, ' ');
+  if (!clean) throw new Error('澄清问题不能为空');
+  const num = maxNumber(review) + 1;
+  const label = `[Q${num}]`;
+  review.areas[AREA_PENDING].push(buildItem([`- ${label} ${clean}`]));
+  return { number: num, label, title: clean };
+}
+
+function findIn(review, area, num) {
+  const list = review.areas[area];
+  const idx = list.findIndex((i) => i.number === num);
+  return idx === -1 ? null : { list, idx, item: list[idx] };
+}
+
+/** 记录人的答复,条目从「待答复」迁到「已答复」。 */
+export function answerQuestion(review, number, answer) {
+  const num = Number(number);
+  const clean = String(answer ?? '').trim();
+  if (!clean) throw new Error('答复不能为空');
+  const hit = findIn(review, AREA_PENDING, num);
+  if (!hit) {
+    if (findIn(review, AREA_ANSWERED, num)) throw new Error(`Q${num} 已经答复过了`);
+    throw new Error(`Q${num} 不存在`);
+  }
+  const [item] = hit.list.splice(hit.idx, 1);
+  item.answer = clean;
+  item.hasAnswer = true;
+  review.areas[AREA_ANSWERED].push(item);
+  return item;
+}
+
+/** 记录该答复落在文档的什么位置。 */
+export function resolveQuestion(review, number, note) {
+  const num = Number(number);
+  const clean = String(note ?? '').trim();
+  if (!clean) throw new Error('落点不能为空');
+  const hit = findIn(review, AREA_ANSWERED, num);
+  if (!hit) {
+    if (findIn(review, AREA_PENDING, num)) throw new Error(`Q${num} 还没有答复,不能落实`);
+    throw new Error(`Q${num} 不存在`);
+  }
+  hit.item.note = hit.item.note ? `${hit.item.note} / ${clean}` : clean;
+  hit.item.hasNote = true;
+  return hit.item;
 }

@@ -1,7 +1,7 @@
 project: {{PROJECT}}
 type: backend                # backend | frontend | fullstack
 
-# {domain} 与 {service} 由活动 id 的对应段替换,{capability} 由能力 id 的第二段替换
+# {capability} 与 {service} 由业务活动 id 的对应段替换,{name} 由领域能力 id 的第二段替换
 layout:
   backend: "{{LAYOUT_BACKEND}}"
   domain: "{{LAYOUT_DOMAIN}}"
@@ -11,7 +11,7 @@ always_readable:
   - src/shared/
   - src/types/
 
-# 按域覆盖 layout,例如 billing 在遗留目录里
+# 按商业能力覆盖 layout,例如 billing 在遗留目录里
 overrides: {}
 
 verify:

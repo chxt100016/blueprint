@@ -1,17 +1,11 @@
 // 模板与引用校验。所有 validate 规则集中在此。
 import path from 'node:path';
 import {
-  findSection, sectionTitles, extractFences, parseFlowchartNodes,
-  parseOrderedSteps, stepKey, parseRules, parseTableFirstColumn, exists,
+  findSection, sectionTitles, extractFences,
+  parseOrderedSteps, parseRules, parseTableFirstColumn,
 } from './parse.mjs';
-import {
-  FLOW_SECTIONS, CAPABILITY_SECTIONS, activitySectionTitles, splitCapabilityId,
-} from './config.mjs';
+import { splitDomainId } from './config.mjs';
 import { anchorOf, toArray } from './repo.mjs';
-
-const FLOW_FM_FIELDS = ['service', 'title', 'product'];
-const ACTIVITY_FM_FIELDS = ['id', 'title', 'depends_on', 'uses', 'entry', 'tables'];
-const CAPABILITY_FM_FIELDS = ['id', 'title', 'tables'];
 
 function err(list, where, msg) {
   list.push({ where, msg });
@@ -40,17 +34,20 @@ function checkNonEmpty(errors, where, sections, titles) {
   }
 }
 
-function checkRules(errors, where, sections) {
-  const sec = findSection(sections, '行为规则');
+/** numbered 来自模板的 `<!-- bp: numbered=X -->` 标记,模板没标就不校验编号。 */
+function checkRules(errors, where, sections, numbered) {
+  if (!numbered) return;
+  const { section: title, prefix } = numbered;
+  const sec = findSection(sections, title);
   if (!sec) return;
-  const nums = parseRules(sec.body);
+  const nums = parseRules(sec.body, prefix);
   if (!nums.length) {
-    err(errors, where, '「行为规则」中没有形如 `R1` 的条目');
+    err(errors, where, `「${title}」中没有形如 \`${prefix}1\` 的条目`);
     return;
   }
   for (let i = 0; i < nums.length; i++) {
     if (nums[i] !== i + 1) {
-      err(errors, where, `「行为规则」编号应从 1 连续递增,第 ${i + 1} 条为 R${nums[i]}`);
+      err(errors, where, `「${title}」编号应从 1 连续递增,第 ${i + 1} 条为 ${prefix}${nums[i]}`);
       break;
     }
   }
@@ -73,11 +70,12 @@ export function validateService(repo, serviceId) {
   const errors = [];
   const svc = repo.services.get(serviceId);
   const where = serviceId;
-  if (!svc) { err(errors, where, '服务不存在'); return errors; }
+  if (!svc) { err(errors, where, '业务服务不存在'); return errors; }
   if (!svc.exists) { err(errors, where, `缺少 ${path.relative(repo.root, svc.flowPath)}`); return errors; }
 
-  checkSections(errors, where, sectionTitles(svc.sections), FLOW_SECTIONS);
-  checkFmFields(errors, where, svc.fm, FLOW_FM_FIELDS);
+  const tpl = repo.cfg.templates.flow;
+  checkSections(errors, where, sectionTitles(svc.sections), tpl.titles);
+  checkFmFields(errors, where, svc.fm, tpl.fmFields);
 
   if (svc.fm.service !== serviceId) {
     err(errors, where, `front-matter 的 service (${svc.fm.service ?? '缺失'}) 与路径不一致`);
@@ -86,25 +84,30 @@ export function validateService(repo, serviceId) {
 
   const ref = svc.fm.product;
   if (!ref || typeof ref !== 'string' || !ref.includes('#')) {
-    err(errors, where, 'product 应形如 `<域>#<二级标题>`');
+    err(errors, where, 'product 应形如 `<商业能力>#<业务服务>`');
   } else {
     const found = anchorOf(repo, ref);
     if (!found) err(errors, where, `product 锚点 \`${ref}\` 不存在`);
     const users = repo.anchorUsers.get(ref) || [];
-    if (users.length > 1) err(errors, where, `锚点 \`${ref}\` 被多个服务引用: ${users.join(', ')}`);
+    if (users.length > 1) err(errors, where, `锚点 \`${ref}\` 被多个业务服务引用: ${users.join(', ')}`);
   }
 
-  checkNonEmpty(errors, where, svc.sections, FLOW_SECTIONS);
+  checkNonEmpty(errors, where, svc.sections, tpl.titles);
 
-  // 流程图:含且仅含一个 mermaid 代码块,首行为 flowchart
+  // 流程图:含且仅含一个 mermaid 代码块,首行为 flowchart。
+  // 图与「流程」步骤的逐条对应不做校验——归一化只能抹平标点空白,抹不平措辞,
+  // 图文说的是同一件事却因几个字不同而卡住 approve,代价远大于它保障的可读性。
   const diagramSec = findSection(svc.sections, '流程图');
   const fences = diagramSec ? extractFences(diagramSec.body).filter((f) => f.lang === 'mermaid') : [];
   if (fences.length !== 1) {
     err(errors, where, `「流程图」应含且仅含一个 mermaid 代码块,实际 ${fences.length} 个`);
   } else if (!/^\s*flowchart\b/.test(fences[0].code.trim())) {
     err(errors, where, '「流程图」的 mermaid 首行应为 `flowchart`');
-  } else {
-    checkFlowchartMapping(errors, where, fences[0].code, findSection(svc.sections, '流程')?.body || '');
+  }
+
+  // 「流程」必须是有序步骤:changes 清单要数步骤数,活动划分也由它推导
+  if (!parseOrderedSteps(findSection(svc.sections, '流程')?.body || '').length) {
+    err(errors, where, '「流程」中没有形如 `1. xxx` 的有序步骤');
   }
 
   // 活动划分
@@ -116,15 +119,15 @@ export function validateService(repo, serviceId) {
   const seen = new Set();
   for (const it of items) {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(it.slug)) {
-      err(errors, where, `活动 slug \`${it.slug}\` 不是合法目录名(小写字母、数字、连字符)`);
+      err(errors, where, `业务活动 slug \`${it.slug}\` 不是合法目录名(小写字母、数字、连字符)`);
     }
-    if (seen.has(it.slug)) err(errors, where, `活动 slug \`${it.slug}\` 重复`);
+    if (seen.has(it.slug)) err(errors, where, `业务活动 slug \`${it.slug}\` 重复`);
     seen.add(it.slug);
     if (it.loose) err(errors, where, `活动划分条目 \`${it.slug}\` 的 slug 与说明之间应留两个以上空格`);
   }
 
-  // 划分与目录一一对应:activity 已 approve 之后才校验
-  if (repo.lock.services?.[serviceId]?.activity_approved_at) {
+  // 划分与目录一一对应:活动层 approve 之后才校验
+  if (repo.lock.services?.[serviceId]?.activity) {
     const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
     for (const it of items) {
       if (!dirs.has(it.slug)) err(errors, where, `活动划分中的 \`${it.slug}\` 缺少 ${it.slug}/activity.md`);
@@ -133,37 +136,12 @@ export function validateService(repo, serviceId) {
       if (!seen.has(d)) err(errors, where, `活动目录 \`${d}\` 不在「活动划分」中`);
     }
   }
-  return errors;
-}
 
-function checkFlowchartMapping(errors, where, code, flowBody) {
-  const nodes = parseFlowchartNodes(code).filter((n) => !n.terminal);
-  const steps = parseOrderedSteps(flowBody);
-  if (!steps.length) {
-    err(errors, where, '「流程」中没有形如 `1. xxx` 的有序步骤');
-    return;
-  }
-  const stepMap = new Map();
-  for (const s of steps) {
-    const k = stepKey(s.text);
-    stepMap.set(k, (stepMap.get(k) || 0) + 1);
-  }
-  const nodeMap = new Map();
-  for (const n of nodes) {
-    const k = stepKey(n.text);
-    nodeMap.set(k, (nodeMap.get(k) || 0) + 1);
-  }
-  for (const s of steps) {
-    const k = stepKey(s.text);
-    const c = nodeMap.get(k) || 0;
-    if (c === 0) err(errors, where, `流程第 ${s.no} 步「${s.text}」在流程图中没有对应节点`);
-    else if (c > 1) err(errors, where, `流程第 ${s.no} 步「${s.text}」在流程图中有 ${c} 个同文字节点`);
-  }
-  for (const n of nodes) {
-    if (!stepMap.has(stepKey(n.text))) {
-      err(errors, where, `流程图节点「${n.text}」在「流程」中没有对应步骤`);
-    }
-  }
+  // depends_on 成环:环是服务级事实,在这里查一次,不在每个活动上重复查
+  const cycle = findCycle(repo, serviceId);
+  if (cycle) err(errors, where, `depends_on 构成环: ${cycle.join(' → ')}`);
+
+  return errors;
 }
 
 // ----------------------------------------------------------------- activity
@@ -172,12 +150,12 @@ export function validateActivity(repo, id) {
   const errors = [];
   const act = repo.activities.get(id);
   const where = id;
-  if (!act) { err(errors, where, '活动不存在'); return errors; }
-  const cfg = repo.cfg;
-  const expected = activitySectionTitles(cfg);
+  if (!act) { err(errors, where, '业务活动不存在'); return errors; }
+  const tpl = repo.cfg.templates.activity;
+  const expected = tpl.titles;
 
   checkSections(errors, where, sectionTitles(act.sections), expected);
-  checkFmFields(errors, where, act.fm, ACTIVITY_FM_FIELDS);
+  checkFmFields(errors, where, act.fm, tpl.fmFields);
 
   if (act.fm.id !== id) err(errors, where, `front-matter 的 id (${act.fm.id ?? '缺失'}) 与路径不一致`);
   if (!act.fm.title) err(errors, where, 'front-matter 缺少 title');
@@ -201,7 +179,7 @@ export function validateActivity(repo, id) {
   // depends_on
   for (const dep of act.depends_on) {
     if (typeof dep !== 'string' || dep.split('.').length !== 3) {
-      err(errors, where, `depends_on 中 \`${dep}\` 不是活动 id`);
+      err(errors, where, `depends_on 中 \`${dep}\` 不是业务活动 id`);
       continue;
     }
     const depService = dep.split('.').slice(0, 2).join('.');
@@ -211,26 +189,25 @@ export function validateActivity(repo, id) {
     }
     if (!repo.activities.has(dep)) err(errors, where, `depends_on 中 \`${dep}\` 对应的 activity.md 不存在`);
   }
-  const cycle = findCycle(repo, act.service);
-  if (cycle && cycle.includes(id)) err(errors, where, `depends_on 构成环: ${cycle.join(' → ')}`);
 
-  // uses:只校验形式,存在性由 stage capability_pending 承接
+  // uses:只校验形式,存在性由 domain 层承接
   for (const u of act.uses) {
     if (typeof u !== 'string' || !/^@[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(u)) {
-      err(errors, where, `uses 中 \`${u}\` 应形如 \`@<域>.<能力>\``);
+      err(errors, where, `uses 中 \`${u}\` 应形如 \`@<领域>.<能力名>\``);
     }
   }
 
   checkNonEmpty(errors, where, act.sections, expected);
-  checkRules(errors, where, act.sections);
+  checkRules(errors, where, act.sections, tpl.numbered);
   checkTables(errors, where, act.fm.tables);
 
-  // entry
+  // entry:模板 entry 下列出的子键即本 type 必填的入口
   const entry = act.fm.entry || {};
-  if (cfg.type !== 'frontend' && !entry.api) err(errors, where, 'entry.api 必填(config.type 非 frontend)');
-  if (cfg.type !== 'backend' && !entry.ui) err(errors, where, 'entry.ui 必填(config.type 非 backend)');
+  for (const k of tpl.entryFields) {
+    if (!entry[k]) err(errors, where, `entry.${k} 必填(模板 templates/activity.md 要求)`);
+  }
   for (const k of Object.keys(entry)) {
-    if (!['api', 'ui'].includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
+    if (!tpl.entryFields.includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
   }
   return errors;
 }
@@ -298,30 +275,31 @@ export function topoSort(repo, ids) {
   return out;
 }
 
-// --------------------------------------------------------------- capability
+// ------------------------------------------------------------------ domain
 
-export function validateCapability(repo, id) {
+export function validateDomain(repo, id) {
   const errors = [];
-  const cap = repo.capabilities.get(id);
+  const dom = repo.domains.get(id);
   const where = id;
-  if (!cap) { err(errors, where, '领域能力不存在'); return errors; }
+  if (!dom) { err(errors, where, '领域能力不存在'); return errors; }
 
-  checkSections(errors, where, sectionTitles(cap.sections), CAPABILITY_SECTIONS);
-  checkFmFields(errors, where, cap.fm, CAPABILITY_FM_FIELDS);
+  const tpl = repo.cfg.templates.domain;
+  checkSections(errors, where, sectionTitles(dom.sections), tpl.titles);
+  checkFmFields(errors, where, dom.fm, tpl.fmFields);
 
-  if (cap.fm.id !== id) err(errors, where, `front-matter 的 id (${cap.fm.id ?? '缺失'}) 与路径不一致`);
-  if (!cap.fm.title) err(errors, where, 'front-matter 缺少 title');
-  const [d, c] = splitCapabilityId(id);
-  if (!d || !c) err(errors, where, 'id 应形如 `@<域>.<能力>`');
+  if (dom.fm.id !== id) err(errors, where, `front-matter 的 id (${dom.fm.id ?? '缺失'}) 与路径不一致`);
+  if (!dom.fm.title) err(errors, where, 'front-matter 缺少 title');
+  const [group, name] = splitDomainId(id);
+  if (!group || !name) err(errors, where, 'id 应形如 `@<领域>.<能力名>`');
 
-  checkNonEmpty(errors, where, cap.sections, CAPABILITY_SECTIONS);
-  checkRules(errors, where, cap.sections);
-  checkTables(errors, where, cap.fm.tables);
+  checkNonEmpty(errors, where, dom.sections, tpl.titles);
+  checkRules(errors, where, dom.sections, tpl.numbered);
+  checkTables(errors, where, dom.fm.tables);
 
   // 契约只增不改
-  const locked = repo.lock.capabilities?.[id]?.spec;
+  const locked = repo.lock.domains?.[id]?.spec;
   if (locked?.contract_fields) {
-    const now = contractFields(cap);
+    const now = contractFields(dom);
     for (const f of locked.contract_fields) {
       if (!now.includes(f)) {
         err(errors, where, `契约字段 \`${f}\` 被删除或改名。领域能力契约只增不改,破坏性变更请新建能力`);
@@ -331,8 +309,8 @@ export function validateCapability(repo, id) {
   return errors;
 }
 
-export function contractFields(cap) {
-  const sec = findSection(cap.sections, '契约');
+export function contractFields(dom) {
+  const sec = findSection(dom.sections, '契约');
   if (!sec) return [];
   return parseTableFirstColumn(sec.body).filter((f) => f && !/^-+$/.test(f));
 }
@@ -343,7 +321,7 @@ export function validateAll(repo) {
   const all = [];
   for (const id of repo.services.keys()) all.push(...validateService(repo, id));
   for (const id of repo.activities.keys()) all.push(...validateActivity(repo, id));
-  for (const id of repo.capabilities.keys()) all.push(...validateCapability(repo, id));
+  for (const id of repo.domains.keys()) all.push(...validateDomain(repo, id));
   // product 侧:锚点被多个服务引用已在服务侧报出;这里只查孤儿目录
   for (const svc of repo.services.values()) {
     if (!svc.exists) err(all, svc.id, `目录存在但缺少 flow.md: ${path.relative(repo.root, svc.dir)}`);
@@ -359,11 +337,11 @@ export function validateId(repo, id) {
     return out;
   }
   if (repo.activities.has(id)) return validateActivity(repo, id);
-  if (repo.capabilities.has(id)) return validateCapability(repo, id);
+  if (repo.domains.has(id)) return validateDomain(repo, id);
   if (repo.products.has(id)) {
     const out = [];
     for (const svc of repo.services.values()) {
-      if (svc.domain === id) out.push(...validateService(repo, svc.id));
+      if (svc.capability === id) out.push(...validateService(repo, svc.id));
     }
     return out;
   }

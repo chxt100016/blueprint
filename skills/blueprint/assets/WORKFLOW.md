@@ -8,62 +8,95 @@
 ## 一句话上手
 
 ```
-# 1. 在 blueprint/product/<域>.md 里写一个二级标题(业务服务)和它的业务描述
+# 1. 在 blueprint/product/<商业能力>.md 里写一个二级标题(业务服务)和它的业务描述
+#    想一起做的几个服务可以一次都写上,它们会作为一波同时推进
 # 2. 反复调用 pipeline skill,直到它说全部就绪
 /pipeline-{{PROJECT}}
 ```
 
-pipeline 每次只推进一个对象,推进完就停下交人。人要做的只有三件事:
-答复 review 里的问题、执行两道 approve 门、执行 todo 里的 SQL。
+人要做的只有三件事:**答复 AI 的澄清问题、走三道确认门、执行 todo 里的 SQL。**
 
-## 分层
+## 五层业务架构
 
-| 业务架构层 | 产物 | 写入者 |
+| 层 | 载体 | 写入者 |
 |---|---|---|
-| 商业能力 | `product/<domain>.md` | 人 |
-| 业务服务 | product 文件中的二级标题 | 人(标题)/ AI(内容) |
-| 业务流程 | `spec/<domain>/<service>/flow.md` | flow skill |
-| 业务活动 | `spec/<domain>/<service>/<activity>/activity.md` | activity skill |
-| 业务动作 | activity 文档中的 `R1 R2 R3` | activity skill |
-| 领域能力 | `domain/<domain>/<capability>/capability.md` | domain skill |
+| 商业能力 | `product/<capability>.md` 一个文件 | 人 |
+| 业务服务 | product 文件里的一个二级标题(锚点) | 人 |
+| 业务流程 | `spec/<capability>/<service>/flow.md` | flow skill |
+| 业务活动 | `spec/<capability>/<service>/<activity>/activity.md` | activity skill |
+| 业务动作 | activity.md 里的 `A1 A2 A3` | activity skill |
 
-**每层文档只有一个写入者,跨层意见一律走 review。** 人对 flow 不满意不直接改 flow.md,
-而是写进 `flow.review.md` 的「改动建议」;AI 对 product 有疑问也不改 product,而是写进「待确定」。
+外加一个横切层:
+
+| 层 | 载体 | 写入者 |
+|---|---|---|
+| 领域能力 | `domain/<domain>/<name>/domain.md`,id 以 `@` 开头 | domain skill |
+
+**每层文档只有一个写入者,跨层意见一律走澄清。** 人对流程不满意不直接改 flow.md,
+而是在 AI 问你的时候答复、或在确认门前选「我要补充」;AI 对 product 有疑问也不改 product,
+而是问你。
+
+「商业能力」与「领域能力」是两个不同的东西:前者是 product 里的业务归属域,
+后者是跨服务复用的横切能力。命名上前者叫 capability,后者叫 domain,不要混用。
+
+## stage:项目当前该做什么
+
+任何时刻整个项目只有一个 stage,它回答的问题只有一个——现在该调哪个 skill。
+
+```
+node blueprint/scripts/bp.mjs stage
+```
+
+| stage | 谁来做 |
+|---|---|
+| `orphaned` | 人 —— 确认清理清单(多半是重命名造成的) |
+| `blocked` | 人 —— 执行 `blueprint/todo/` 下的工单 |
+| `flow` | flow skill |
+| `activity` | activity skill |
+| `domain` | domain skill |
+| `code` | code skill |
+| `commit` | commit skill |
+| `ready` | 没有待办 |
+
+取件顺序按依赖链正向推进,**新写的 product 锚点排在最后**:
+
+```
+orphaned → blocked → flow → activity → domain → code → commit → 新锚点 → ready
+```
+
+所以中途想到新需求随手写进 product 不会打断当前这一波,它会自动等到整条链清空。
+想立刻单独做,用 git worktree 开一个工作区。
 
 ## 人的三件事
 
-### 1. 答复 review
+### 1. 答复澄清
 
-`bp scan` 显示 `flow_review_human` 或 `activity_review_human` 时,打开对应的 `*.review.md`,
-在「待确定」条目下用 `>` 追加答复:
+flow / activity / domain 三个 skill 每轮都会提至少 3 个拿不准的问题,用选择工具问你,
+每题给几个具体候选,你也可以自己输入。当场答不上来就选「暂不确定」,它会留在待答复区,
+下一轮再问你,不影响这一轮的其他工作。
 
-```markdown
-- [Q2] 优惠券核销失败时是否回滚整单?
-  > 回滚。已扣的库存由超时释放。
-```
-
-有修改要求时写进「改动建议」区,不写编号,脚本会分配:
-
-```markdown
-- 抵扣上限需要单独说明
-```
-
-答复完再跑一次 pipeline。
-
-### 2. 两道 approve 门
-
-只有人能执行,任何 skill 不得调用带 `--confirm` 的形式。
+答复会被记进同目录的 `*.review.md`,并且 AI 落实到文档后必须写明落在哪一节。
+这份记录**由脚本独占读写,不要手工编辑**。想看当前状态:
 
 ```
-node blueprint/scripts/bp.mjs approve flow <service>              # 看确认清单
-node blueprint/scripts/bp.mjs approve flow <service> --confirm    # 落章
-
-node blueprint/scripts/bp.mjs approve activity <service>
-node blueprint/scripts/bp.mjs approve activity <service> --confirm
+node blueprint/scripts/bp.mjs review list <id>
 ```
 
-清单里的「不受影响」与「本轮确认落点」两节要逐行看:AI 说某个活动无需改动、AI 说答复已落进文档,
-都不产生 diff、不触发校验,人过目是唯一的捕获时机。
+### 2. 三道确认门
+
+每道门的形式都一样:AI 先打印完整变更清单,再问你「通过」还是「我要补充」。
+
+```
+node blueprint/scripts/bp.mjs flow changes <service>       # 流程与活动划分
+node blueprint/scripts/bp.mjs activity changes <service>   # 各活动的契约
+node blueprint/scripts/bp.mjs domain changes <@id>         # 领域能力的契约
+```
+
+清单里的「不受影响」与「本轮澄清落点」两节要逐行看:AI 说某个活动无需改动、
+AI 说答复已落进文档,都不产生 diff、不触发校验,人过目是唯一的捕获时机。
+
+你选「通过」之后 AI 才会执行对应的 `approve`。**code 阶段没有确认门**——
+设计决策已经在这三道门里定完了,代码的正确性由 verify 判定,真正该看的 diff 在 commit 时看。
 
 ### 3. 执行 todo
 
@@ -77,26 +110,25 @@ node blueprint/scripts/bp.mjs schema pull
 ## 常用命令
 
 ```
-node blueprint/scripts/bp.mjs scan            # 看整体状态,一切从这里开始
-node blueprint/scripts/bp.mjs status <id>     # 看某个服务/活动/能力的详情
-node blueprint/scripts/bp.mjs review status <id>
+node blueprint/scripts/bp.mjs stage              # 现在该做什么,一切从这里开始
+node blueprint/scripts/bp.mjs scan               # 四层的完成度总览
+node blueprint/scripts/bp.mjs scan flow          # 某一层的待办明细
+node blueprint/scripts/bp.mjs status <id>        # 某个服务/活动/领域能力的详情
+node blueprint/scripts/bp.mjs domain list        # 全部领域能力:已确认/待设计/已否决
+node blueprint/scripts/bp.mjs review list <id>   # 澄清记录
 node blueprint/scripts/bp.mjs validate [<id>]
-node blueprint/scripts/bp.mjs which <file>    # 反查文件属于哪个活动
-node blueprint/scripts/bp.mjs doctor          # 检查安装完整性
+node blueprint/scripts/bp.mjs which <file>       # 反查文件属于哪个活动
 ```
 
-## stage 含义
+## 每层的对象状态
 
-| stage | 含义 | 谁来动 |
-|---|---|---|
-| `unclaimed` | product 里有锚点但还没建流程 | pipeline → flow skill |
-| `orphaned` | 锚点/划分/引用没了,可能是重命名 | 人确认清理清单 |
-| `flow_review_ai` | flow.review 有待 AI 处理的条目 | pipeline |
-| `flow_review_human` | flow.review 只剩待人答复的条目 | 人 |
-| `activity_review_ai` / `_human` | 同上,针对活动与能力 | pipeline / 人 |
-| `capability_pending` | `uses` 引用了还不存在的领域能力 | pipeline → domain skill |
-| `flow_pending` | product 变了,流程需重新整理 | pipeline → flow skill |
-| `activity_pending` | flow 变了,活动文档需跟进 | pipeline → activity skill |
-| `blocked` | 表结构还没跟上 | 人执行 todo |
-| `impl_pending` | 文档已确认,代码还没实现 | pipeline → code/lock/commit |
-| `ready` | 就绪 | — |
+`bp scan <层>` 里每个对象有四种状态,skill 靠它决定这一轮做什么:
+
+| state | 含义 |
+|---|---|
+| `todo` | 文档还没产出,或上游变了需要跟进 |
+| `review` | 有澄清没答复,或已答复但没写落点 |
+| `approve` | 文档就绪,等你确认 |
+| `done` | 已确认,跳过 |
+
+code 层另有两个:`blocked`(等你执行 todo 或补 schema)与 `waiting`(等 domain 层先产出契约)。
