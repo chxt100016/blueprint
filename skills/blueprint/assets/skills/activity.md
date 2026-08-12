@@ -49,10 +49,16 @@ BP scan activity
 ## 2. 产出 activity.md
 
 1. `BP schema pull`
-   失败也继续——沿用现有 snapshot，并在最后的输出中标注「snapshot 未刷新」。
+   - 成功 → 继续
+   - 失败但 `blueprint/snapshot/db/tables/` 下已有内容 → 沿用旧 snapshot，
+     在最后的输出中标注「snapshot 未刷新」
+   - 失败且 snapshot 为空 → **停下交人**配好 `blueprint/context/db.yaml`。
+     没有 snapshot 就分不清「库里没这张表」和「还没导出过」，硬做会产出把既有表重建的工单。
 
 2. **读上游**
-   - `BP read <service>#流程` 与 `#分支与异常`、`#活动划分`（或直接读 flow.md 全文）
+   - `BP read <service>#流程` 与 `#分支与异常`、`#活动划分`、`#技术线索`（或直接读 flow.md 全文）
+     「技术线索」是人在 product 里写下的表名、接口名，由 flow 层原样摘录传下来——
+     **不要跨层去读 product**，那一层不归你读
    - `blueprint/templates/activity.md`
    - `blueprint/snapshot/db/schema.md`
    - `blueprint/context/` 下全部文件
@@ -71,7 +77,9 @@ BP scan activity
    - 「输入输出」用表格写字段名、类型、必填性、约束，含成功返回结构与失败码
    - 「动作」用 `A1 A2 A3` 连续编号，每条一个可独立判定的业务动作，
      不写代码结构、类名、算法实现
-   - `tables` 逐列声明读写的表与列——这是 `schema check` 的唯一依据，漏一列就漏一次检查
+   - `tables` 逐列声明读写的表与列——这是 `schema check` 的唯一依据，漏一列就漏一次检查。
+     **关联查询涉及的每张表都要列**，包括只用来 join 的表；关联字段（如 `user_id`）
+     必须出现在对应表的 `columns` 里。「怎么 join」不写这里，那是业务动作，写进 `A`
 
 5. **`depends_on` 只填同服务内的业务活动。** 需要引用其他服务的能力时一律走 `uses`。
    跨服务的活动级引用是依赖爆炸的唯一来源，脚本会直接拒绝。
@@ -117,6 +125,9 @@ BP domain list
 
 优先问这些：字段的类型与长度上限、必填性、幂等策略、重试次数与退避、超时时长、
 并发冲突怎么解、失败码怎么分、边界数值取多少。这些都会直接影响实现，猜错就得返工。
+
+**schema 里有多张名字相近的表时必问**（`user` / `users` / `user_info`），
+选错不会报错，会一路错到实现。
 
 三步走，与 flow skill 相同，`<id>` 换成**活动 id**：
 

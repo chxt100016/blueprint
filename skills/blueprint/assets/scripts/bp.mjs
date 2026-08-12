@@ -902,7 +902,13 @@ function cmdSchemaCheck(id) {
   const { root, repo } = ctx();
   const decls = declarationsOf(repo, id);
   const { gaps, snapshotExists } = checkTables(root, decls);
-  if (!snapshotExists) out('snapshot 尚未生成,视为全部缺失。先运行 bp schema pull');
+  // snapshot 为空不等于库里没有这些表。此时列出「缺失」会让调用方据此生成建表工单,
+  // 而那些表很可能早就存在——最坏情况是一份把既有表重建的 SQL。宁可停下。
+  if (!snapshotExists) {
+    fail('snapshot 尚未生成,无法判断表结构是否就绪。\n'
+      + '先配好 blueprint/context/db.yaml 再运行 bp schema pull。\n'
+      + '(snapshot 为空只说明还没导出过,不代表库里没有这些表,不要据此生成建表工单)', 2);
+  }
   if (!gaps.length) { out(`${id || '全部'} 的表结构声明已就绪`); return; }
   out('缺失:');
   for (const g of gaps) {
