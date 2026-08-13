@@ -1,22 +1,31 @@
 // 仓库模型:一次性把 product / spec / domain / lock / todo 读进内存,
 // 其余模块(schema / stage / codemap)全部基于这个模型工作。
 //
-// 命名对应五层业务架构:
-//   products    product/<capability>.md         商业能力(文件)+ 业务服务(二级标题锚点)
-//   services    spec/<capability>/<service>/    业务流程
-//   activities  .../<activity>/activity.md      业务活动
-//   domains     domain/<domain>/<name>/         领域能力(横切层)
+// 命名对应业务架构:
+//   products    product/<capability>.md              商业能力(文件)+ 业务服务(二级标题锚点)
+//   services    spec/<capability>/<service>/          业务服务:一次对外交付
+//   flows       spec/<capability>/<service>/<flow>.md 业务流程:一个对外接口
+//   activities  spec/<capability>/<service>/<act>/    业务活动:一次状态变更
+//   domains     domain/<domain>/<name>/               领域能力(横切层)
+//
+// 业务活动归属服务而不是流程:同一次交付的多个入口共享一个活动池,
+// 流程只是活动的编排。所以活动目录与流程文件同层。
+//
+// id 的第三段是固定的层级标记,`flow` 或 `activity`:
+//   <capability>.<service>.flow.<name>       ↔ spec/<cap>/<svc>/<name>.md
+//   <capability>.<service>.activity.<name>   ↔ spec/<cap>/<svc>/<name>/activity.md
+// 标记段让 id 自解释,层级判定不必查表,流程名与活动名也不会撞车。
 import fs from 'node:fs';
 import path from 'node:path';
 import {
   parseFrontMatter, splitSections, findSection, sectionsText,
   parseActivityList, listDirs, listFiles, readFileSafe, exists,
 } from './parse.mjs';
-import { hashAnchor, hashDoc, omit } from './hash.mjs';
+import { hashAnchor, hashDoc, sha256, omit } from './hash.mjs';
 import { parseReview } from './review.mjs';
-import { bpPath, loadConfig } from './config.mjs';
+import { bpPath, loadConfig, FLOW_MARK, ACTIVITY_MARK } from './config.mjs';
 
-export const LOCK_VERSION = 3;
+export const LOCK_VERSION = 4;
 
 function readDoc(file) {
   const raw = readFileSafe(file);
@@ -32,13 +41,33 @@ function readReview(file) {
   return parseReview(raw);
 }
 
+const MIGRATE_HINT = `lock.json 是 v%OLD%,当前脚本要求 v${LOCK_VERSION}。
+
+v4 把业务流程从「一个服务一份 flow.md」改成「一个接口一份 <flow>.md」,需要人工迁移:
+
+  1. flow.md 改名为 <flow-slug>.md,与活动目录同层(原本就同层,只需改名)
+  2. flow.md 的 front-matter:service 字段换成 flow(形如 <cap>.<svc>.flow.<name>),
+     并从原入口活动的 entry 搬来 entry
+  3. 「活动划分」章节改名「活动编排」,新增「接口契约」章节
+  4. 各 activity.md:front-matter 去掉 entry、加上 summary(原先写在 flow.md 的活动划分里)
+  5. lock.json:services.<id>.flow 移到 flows.<id>.flow.<flow-slug>.flow,
+     services.<id>.activity.flow_hash 改名 flows_hash,
+     activities 的键补上 activity 标记段,version 改 4
+  6. 重新走一遍 bp flow approve 与 bp activity approve(front-matter 变了,哈希必然失效)`;
+
 export function loadLock(root) {
   const file = bpPath(root, 'lock.json');
   const raw = readFileSafe(file);
-  if (raw === null) return { version: LOCK_VERSION, services: {}, activities: {}, domains: {} };
+  if (raw === null) return { version: LOCK_VERSION, services: {}, flows: {}, activities: {}, domains: {} };
   let lock;
   try { lock = JSON.parse(raw); } catch (e) { throw new Error(`lock.json 解析失败: ${e.message}`); }
+  const hasContent = Object.keys(lock.services || {}).length ||
+    Object.keys(lock.activities || {}).length || Object.keys(lock.domains || {}).length;
+  if (hasContent && Number(lock.version) < LOCK_VERSION) {
+    throw new Error(MIGRATE_HINT.replace('%OLD%', lock.version ?? '(未知)'));
+  }
   lock.services = lock.services || {};
+  lock.flows = lock.flows || {};
   lock.activities = lock.activities || {};
   lock.domains = lock.domains || {};
   lock.rejected_domains = lock.rejected_domains || {};
@@ -76,49 +105,75 @@ function loadProducts(root) {
 
 // --------------------------------------------------------------------- spec
 
-function loadServices(root, cfg, domainUses) {
+/** 该服务目录下的流程文件:排除 service.md 与澄清记录。 */
+function isFlowFile(name) {
+  return name.endsWith('.md') && name !== 'service.md' && !name.endsWith('.review.md');
+}
+
+function loadServices(root, cfg, domainUses, activityUsers) {
   const specDir = bpPath(root, 'spec');
   const services = new Map();
+  const flows = new Map();
   const activities = new Map();
   for (const capability of listDirs(specDir)) {
     for (const slug of listDirs(path.join(specDir, capability))) {
       const dir = path.join(specDir, capability, slug);
       const id = `${capability}.${slug}`;
-      const flowPath = path.join(dir, 'flow.md');
-      const doc = readDoc(flowPath);
-      const reviewPath = path.join(dir, 'flow.review.md');
+      const servicePath = path.join(dir, 'service.md');
       const service = {
         id, capability, slug, dir,
         rel: path.relative(root, dir),
-        flowPath, flowRel: path.relative(root, flowPath),
-        exists: !!doc,
-        fm: doc?.fm || {},
-        sections: doc?.sections || [],
-        raw: doc?.raw || '',
-        product: doc?.fm?.product || null,
-        hash: doc ? hashDoc({
-          fm: omit(doc.fm, ['title']),
-          text: sectionsText(doc.sections, cfg.templates.flow.hashed),
-        }) : null,
-        reviewPath,
-        reviewRel: path.relative(root, reviewPath),
-        review: readReview(reviewPath),
-        activityList: doc ? parseActivityList(findSection(doc.sections, '活动划分')?.body || '') : [],
+        // service.md 是轻文档:只记录服务边界与登记,不校验、不哈希、不进 lock
+        servicePath,
+        serviceRel: path.relative(root, servicePath),
+        hasServiceDoc: exists(servicePath),
+        flows: [],
         activities: [],
+        activityList: [],   // 各流程「活动编排」的并集
       };
       services.set(id, service);
 
+      // 业务流程:目录下的 .md 文件,一个文件一个对外接口
+      for (const name of listFiles(dir)) {
+        if (!isFlowFile(name)) continue;
+        const fslug = name.replace(/\.md$/, '');
+        const file = path.join(dir, name);
+        const doc = readDoc(file);
+        if (!doc) continue;
+        const fid = `${id}.${FLOW_MARK}.${fslug}`;
+        const reviewPath = path.join(dir, `${fslug}.review.md`);
+        const flow = {
+          id: fid, service: id, capability, slug: fslug, dir,
+          file, rel: path.relative(root, file),
+          fm: doc.fm, sections: doc.sections, raw: doc.raw,
+          product: doc.fm.product || null,
+          entry: doc.fm.entry || {},
+          hash: hashDoc({
+            fm: omit(doc.fm, ['title']),
+            text: sectionsText(doc.sections, cfg.templates.flow.hashed),
+          }),
+          reviewPath,
+          reviewRel: path.relative(root, reviewPath),
+          review: readReview(reviewPath),
+          activityList: parseActivityList(findSection(doc.sections, '活动编排')?.body || ''),
+        };
+        flows.set(fid, flow);
+        service.flows.push(fid);
+      }
+
+      // 业务活动:目录下的子目录。归属服务,可被同服务的多个流程编排
       for (const aslug of listDirs(dir)) {
         const adir = path.join(dir, aslug);
         const afile = path.join(adir, 'activity.md');
         if (!exists(afile)) continue;
         const adoc = readDoc(afile);
-        const aid = `${id}.${aslug}`;
+        const aid = `${id}.${ACTIVITY_MARK}.${aslug}`;
         const areviewPath = path.join(adir, 'activity.review.md');
         const activity = {
           id: aid, service: id, capability, slug: aslug, dir: adir,
           file: afile, rel: path.relative(root, afile),
           fm: adoc.fm, sections: adoc.sections, raw: adoc.raw,
+          summary: adoc.fm.summary || '',
           hash: hashDoc({
             fm: omit(adoc.fm, ['title']),
             text: sectionsText(adoc.sections, cfg.templates.activity.hashed),
@@ -137,9 +192,33 @@ function loadServices(root, cfg, domainUses) {
           domainUses.get(u).push(aid);
         }
       }
+
+      // 活动清单 = 各流程编排的并集;引用关系正向存放,反查表由此推出
+      const seen = new Map();
+      for (const fid of service.flows) {
+        for (const item of flows.get(fid).activityList) {
+          if (!seen.has(item.slug)) seen.set(item.slug, item);
+          const aid = `${id}.${ACTIVITY_MARK}.${item.slug}`;
+          if (!activityUsers.has(aid)) activityUsers.set(aid, []);
+          activityUsers.get(aid).push(fid);
+        }
+      }
+      service.activityList = [...seen.values()];
     }
   }
-  return { services, activities };
+  return { services, flows, activities };
+}
+
+/**
+ * 服务下全部流程的组合哈希,活动层拿它当上游。
+ * 任一流程变更都要求活动层复核——活动被多个流程共用,改一个流程可能牵动共用的活动。
+ */
+export function flowsHash(repo, serviceId) {
+  const svc = repo.services.get(serviceId);
+  if (!svc) return null;
+  const parts = [...svc.flows].sort()
+    .map((fid) => `${fid}:${repo.flows.get(fid)?.hash || ''}`);
+  return sha256(parts.join('\n'));
 }
 
 // ------------------------------------------------------------------- domain
@@ -203,24 +282,46 @@ function loadTodos(root) {
 export function loadRepo(root, cfg = null) {
   const config = cfg || loadConfig(root);
   const domainUses = new Map();
+  const activityUsers = new Map();
   const products = loadProducts(root);
-  const { services, activities } = loadServices(root, config, domainUses);
+  const { services, flows, activities } = loadServices(root, config, domainUses, activityUsers);
   const { domains, missingDomains } = loadDomains(root, config, domainUses);
   const lock = loadLock(root);
   const todos = loadTodos(root);
 
   const repo = {
-    root, cfg: config, products, services, activities, domains,
+    root, cfg: config, products, services, flows, activities, domains,
     missingDomains, lock, todos,
+    // 活动 id → 编排它的流程 id 列表。正向引用写在 flow.md 的「活动编排」里,
+    // 这张表由脚本反推,活动文档不记录自己被谁用(与 domainUses 同构)
+    activityUsers,
     anchorUsers: new Map(),
   };
 
-  for (const svc of services.values()) {
-    if (!svc.product) continue;
-    if (!repo.anchorUsers.has(svc.product)) repo.anchorUsers.set(svc.product, []);
-    repo.anchorUsers.get(svc.product).push(svc.id);
+  // 锚点由流程认领:同一个锚点可以有多个流程,但它们必须同属一个服务目录
+  for (const flow of flows.values()) {
+    if (!flow.product) continue;
+    if (!repo.anchorUsers.has(flow.product)) repo.anchorUsers.set(flow.product, []);
+    repo.anchorUsers.get(flow.product).push(flow.id);
   }
   return repo;
+}
+
+/** 编排了该活动的流程 id 列表。 */
+export function flowsOfActivity(repo, activityId) {
+  return repo.activityUsers.get(activityId) || [];
+}
+
+/** 该服务认领的 product 锚点:取各流程声明的锚点,正常情况下只有一个。 */
+export function anchorsOfService(repo, serviceId) {
+  const svc = repo.services.get(serviceId);
+  if (!svc) return [];
+  const out = new Set();
+  for (const fid of svc.flows) {
+    const ref = repo.flows.get(fid)?.product;
+    if (ref) out.add(ref);
+  }
+  return [...out];
 }
 
 export function toArray(v) {
@@ -242,12 +343,18 @@ export function anchorOf(repo, ref) {
   return { product, anchor, capability, title };
 }
 
-/** 该服务下的全部澄清记录(flow + 各活动)。领域能力的记录不挂在服务上。 */
-export function serviceReviews(repo, serviceId) {
+/** 单个流程的澄清记录。flow 层逐个流程确认,不跨流程合并。 */
+export function flowReviews(repo, flowId) {
+  const flow = repo.flows.get(flowId);
+  if (!flow?.review) return [];
+  return [{ kind: 'flow', id: flowId, label: flow.slug, path: flow.reviewPath, review: flow.review }];
+}
+
+/** 该服务全部活动的澄清记录。活动层按服务确认,一次覆盖服务下所有活动。 */
+export function activityReviews(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
   const out = [];
-  if (svc.review) out.push({ kind: 'flow', id: serviceId, label: 'flow', path: svc.reviewPath, review: svc.review });
   for (const aid of svc.activities) {
     const a = repo.activities.get(aid);
     if (a?.review) out.push({ kind: 'activity', id: aid, label: a.slug, path: a.reviewPath, review: a.review });
@@ -289,6 +396,7 @@ export function servicesOfDomain(repo, domain) {
 
 export function findObject(repo, id) {
   if (repo.services.has(id)) return { kind: 'service', obj: repo.services.get(id) };
+  if (repo.flows.has(id)) return { kind: 'flow', obj: repo.flows.get(id) };
   if (repo.activities.has(id)) return { kind: 'activity', obj: repo.activities.get(id) };
   if (repo.domains.has(id)) return { kind: 'domain', obj: repo.domains.get(id) };
   if (repo.products.has(id)) return { kind: 'product', obj: repo.products.get(id) };

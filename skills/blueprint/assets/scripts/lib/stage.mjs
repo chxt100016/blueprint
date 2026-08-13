@@ -19,7 +19,7 @@
 // 上游哈希对不上而本层文档也变了,说明 skill 已经动过手,进入 approve;
 // 本层文档没变,说明还没开始,是 todo。
 import { execFileSync } from 'node:child_process';
-import { anchorOf, relatedDomains, missingForService, servicesOfDomain } from './repo.mjs';
+import { anchorOf, servicesOfDomain, flowsHash } from './repo.mjs';
 import { isClean, stateLabel } from './review.mjs';
 import { loadSnapshot, gapsFor } from './db.mjs';
 
@@ -45,25 +45,28 @@ const row = (id, state, detail = '') => ({ id, state, detail });
 /** 引用关系断裂的对象。多半是重命名造成的,一律交人确认,脚本不自动清理。 */
 export function scanOrphans(repo) {
   const out = [];
-  for (const id of [...repo.services.keys()].sort()) {
-    const svc = repo.services.get(id);
-    if (!svc.exists) continue;
-    if (!svc.product) { out.push(row(id, 'orphaned', 'flow.md 未声明 product 锚点')); continue; }
-    if (!anchorOf(repo, svc.product)) {
-      out.push(row(id, 'orphaned', `product 锚点 ${svc.product} 不存在`));
+  for (const id of [...repo.flows.keys()].sort()) {
+    const flow = repo.flows.get(id);
+    if (!flow.product) { out.push(row(id, 'orphaned', '未声明 product 锚点')); continue; }
+    if (!anchorOf(repo, flow.product)) {
+      out.push(row(id, 'orphaned', `product 锚点 ${flow.product} 不存在`));
     }
   }
+  // 活动归属服务,由流程编排。不被任何流程编排的活动是孤儿
   for (const id of [...repo.activities.keys()].sort()) {
     const act = repo.activities.get(id);
     const svc = repo.services.get(act.service);
-    if (svc?.exists && !svc.activityList.some((i) => i.slug === act.slug)) {
-      out.push(row(id, 'orphaned', `不在 ${act.service} 的「活动划分」中`));
+    if (svc?.flows.length && !svc.activityList.some((i) => i.slug === act.slug)) {
+      out.push(row(id, 'orphaned', `不被 ${act.service} 的任何流程编排`));
     }
   }
   for (const id of [...repo.domains.keys()].sort()) {
     if (!repo.domains.get(id).usedBy.length) {
       out.push(row(id, 'orphaned', '无任何活动 uses 引用'));
     }
+  }
+  for (const id of Object.keys(repo.lock.flows || {})) {
+    if (!repo.flows.has(id)) out.push(row(id, 'orphaned', 'lock 中有记录但文档不存在'));
   }
   for (const id of Object.keys(repo.lock.activities || {})) {
     if (!repo.activities.has(id)) out.push(row(id, 'orphaned', 'lock 中有记录但文档不存在'));
@@ -76,7 +79,7 @@ export function scanOrphans(repo) {
 
 // -------------------------------------------------------------------- flow
 
-/** 未被任何 flow.md 认领的 product 锚点:还没开始的业务服务。 */
+/** 未被任何流程认领的 product 锚点:还没开始的业务服务。 */
 export function unclaimedAnchors(repo) {
   const out = [];
   for (const product of repo.products.values()) {
@@ -88,45 +91,58 @@ export function unclaimedAnchors(repo) {
   return out;
 }
 
+/**
+ * 流程层逐个流程推进:一个流程就是一个对外接口,各自独立确认。
+ * 「这个服务还缺哪个接口」脚本判不出来——那是读 product 时的业务判断,
+ * 由人在流程层的确认门把关。脚本只保证锚点至少有一个流程(unclaimedAnchors)。
+ */
 export function scanFlow(repo) {
   const out = [];
-  for (const id of [...repo.services.keys()].sort()) {
-    const svc = repo.services.get(id);
-    if (!svc.exists) { out.push(row(id, 'todo', '缺少 flow.md')); continue; }
+  for (const id of [...repo.flows.keys()].sort()) {
+    const flow = repo.flows.get(id);
 
-    const lock = repo.lock.services?.[id]?.flow;
-    const anchor = anchorOf(repo, svc.product);
+    const lock = repo.lock.flows?.[id]?.flow;
+    const anchor = anchorOf(repo, flow.product);
     if (!anchor) continue; // orphaned,不在本层处理
 
     const productChanged = !lock || anchor.anchor.hash !== lock.product_hash;
-    const flowChanged = !lock || svc.hash !== lock.flow_hash;
+    const flowChanged = !lock || flow.hash !== lock.flow_hash;
 
     if (productChanged && !flowChanged) {
       out.push(row(id, 'todo', lock ? 'product 描述已变更,流程需跟进' : '尚未整理流程'));
       continue;
     }
     if (productChanged || flowChanged) {
-      if (!isClean(svc.review)) { out.push(row(id, 'review', stateLabel(svc.review))); continue; }
+      if (!isClean(flow.review)) { out.push(row(id, 'review', stateLabel(flow.review))); continue; }
       out.push(row(id, 'approve', lock ? '流程已更新,等确认' : '首次确认'));
       continue;
     }
     out.push(row(id, 'done', ''));
   }
+  // 新写的 product 锚点排在下一波:本波还有待办时不列出,免得人中途记下的新需求
+  // 被卷进当前这一波的澄清——flow skill 拿到的清单永远就是「这一波该做的全部」,
+  // 它不需要知道有别的锚点在排队。本波清空后它们成为仅剩的待办,自然浮上来。
+  // 想看全部锚点的进度用 `bp scan product`。
+  if (out.some((r) => r.state !== 'done')) return out;
   for (const ref of unclaimedAnchors(repo)) {
-    out.push({ ...row(ref, 'todo', 'product 锚点尚未认领'), unclaimed: true });
+    out.push({ ...row(ref, 'todo', '尚未产出流程'), unclaimed: true });
   }
   return out;
 }
 
 // ---------------------------------------------------------------- activity
 
+/**
+ * 活动层按服务聚合:活动归属服务、被多个流程共用,
+ * 一次确认覆盖服务下的全部活动,上游是本服务全部流程的组合哈希。
+ */
 export function scanActivity(repo) {
   const out = [];
   for (const id of [...repo.services.keys()].sort()) {
     const svc = repo.services.get(id);
-    if (!svc.exists) continue;
-    // 上一层没过就不进本层:flow 没定死时活动划分还会变
-    if (!repo.lock.services?.[id]?.flow) continue;
+    if (!svc.flows.length) continue;
+    // 上一层没过就不进本层:任一流程还没定死时,活动编排都还会变
+    if (svc.flows.some((fid) => !repo.lock.flows?.[fid]?.flow)) continue;
 
     const lock = repo.lock.services?.[id]?.activity;
     const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
@@ -136,7 +152,7 @@ export function scanActivity(repo) {
       continue;
     }
 
-    const flowChanged = !lock || svc.hash !== lock.flow_hash;
+    const flowChanged = !lock || flowsHash(repo, id) !== lock.flows_hash;
     let changed = false;
     for (const aid of svc.activities) {
       const act = repo.activities.get(aid);
@@ -145,7 +161,7 @@ export function scanActivity(repo) {
     }
 
     if (flowChanged && !changed) {
-      out.push(row(id, 'todo', lock ? 'flow 已变更,活动需跟进' : '尚未产出活动文档'));
+      out.push(row(id, 'todo', lock ? '流程已变更,活动需跟进' : '尚未产出活动文档'));
       continue;
     }
     if (flowChanged || changed) {

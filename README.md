@@ -33,17 +33,16 @@ npx skills rm chxt100016/blueprint --all
 ```
 
 装完在目标项目里对 Claude 说「初始化 blueprint」即可。它会问清项目名、类型、
-代码布局、编译命令、数据库方言，再拷贝生成物。也可以直接跑脚本：
+代码布局与编译命令，再拷贝生成物。也可以直接跑脚本：
 
 ```bash
-node ~/.claude/skills/blueprint/assets/scripts/bp.mjs init \
+node ~/.claude/skills/blueprint/assets/bootstrap.mjs \
   --root <目标项目> --project shop --type fullstack \
   --layout-backend "src/modules/{capability}/" \
   --layout-frontend "src/pages/{capability}/" \
   --layout-domain "src/domain/{name}/" \
   --verify-backend "npx tsc --noEmit -p tsconfig.server.json" \
-  --verify-frontend "npx tsc --noEmit -p tsconfig.web.json" \
-  --db-dialect postgres --db-migration-table schema_migrations
+  --verify-frontend "npx tsc --noEmit -p tsconfig.web.json"
 ```
 
 日常推进用生成出来的 `pipeline-<project>` skill；`blueprint` skill 只管 init。
@@ -54,8 +53,9 @@ node ~/.claude/skills/blueprint/assets/scripts/bp.mjs init \
 skills/blueprint/
   SKILL.md                 全局 skill:init
   assets/
-    bp-assets.json         母版标记,bp.mjs 据此判断能否执行 init
-    scripts/bp.mjs         单入口,零 npm 依赖,只用 Node 内置模块
+    bootstrap.mjs          母版入口，只负责初始化/刷新目标项目
+    bp-assets.json         母版资产标记
+    scripts/bp.mjs         项目运行时入口，供六个生成 skill 调用
     scripts/lib/
       hash.mjs             全项目哈希的唯一实现
       parse.mjs            md / front-matter / YAML 子集 / mermaid 解析
@@ -66,9 +66,8 @@ skills/blueprint/
       stage.mjs            stage 判定与分层 scan
       db.mjs               snapshot 的导出与比对
       codemap.mjs          业务活动/领域能力到代码文件的索引
-      install.mjs          init 的资产操作
-    templates/{backend,frontend,fullstack}/   四份文档模板
-    config/{backend,frontend,fullstack}.yaml  config 骨架
+    templates/{backend,fullstack}/   五份文档模板
+    config/{backend,fullstack}.yaml  config 骨架
     skills/*.md            六个 *-{project} skill 的母版
     WORKFLOW.md CONVENTIONS.md context-README.md
 ```
@@ -76,16 +75,56 @@ skills/blueprint/
 六个生成 skill：`pipeline` `flow` `activity` `domain` `code` `commit`，
 与除 `orphaned` / `blocked` / `ready` 外的每个 stage 一一对应。
 
+## 术语与写入者
+
+| 层 | 载体 | 粒度 | 写入者 |
+|---|---|---|---|
+| 商业能力 | `blueprint/product/<capability>.md` 一个文件 | 业务归属域 | 人 |
+| 业务服务 | product 文件里的一个二级标题（锚点） | 一次对外交付 | 人 |
+| 业务流程 | `blueprint/spec/<capability>/<service>/<flow>.md` | **一个对外接口** | flow skill |
+| 业务活动 | `blueprint/spec/<capability>/<service>/<activity>/activity.md` | 一次状态变更 | activity skill |
+| 业务动作 | activity.md 里的 `A1 A2 A3` | 一步可判定的操作 | activity skill |
+
+一个业务服务可以有多个业务流程——同一次交付有多个入口形态时（调用方在它们之间二选一），
+一个接口一份流程文件。业务活动归属服务而不是流程，同一个服务的多个流程共享一个活动池，
+流程文件的「活动编排」列出本流程用到哪些活动：
+
+```
+blueprint/spec/<capability>/<service>/
+  service.md          知识记录，不参与任何判定
+  <flow-a>.md         一个对外接口
+  <flow-b>.md         另一个对外接口
+  <activity>/         业务活动，可被上面多个流程编排
+```
+
+外加一个横切层：
+
+| 层 | 载体 | 写入者 |
+|---|---|---|
+| 领域能力 | `blueprint/domain/<domain>/<name>/domain.md`，id 以 `@` 开头 | domain skill |
+
+id 的第三段是固定的层级标记：流程是 `<cap>.<svc>.flow.<name>`，活动是 `<cap>.<svc>.activity.<name>`。
+两者都挂在服务下，标记段让 id 自解释，解析时不必查表。
+
+代码实现与 `blueprint/codemap/<capability>/<service>/<activity>.yaml` 索引由 code skill 写入，
+提交由 commit skill 执行，二者都不写上面这六层的任何文档。
+
+**每层文档只有一个写入者，跨层意见一律走澄清。** 这张表同时生成到项目内的
+`blueprint/WORKFLOW.md`（「五层业务架构」一节），六个 skill 各自只声明所属层次并指向那里，
+不重复携带整张表。
+
 ## 体系要点
 
 - **产物层次对应业务架构层次**：商业能力 → 业务服务 → 业务流程 → 业务活动 → 业务动作，
   领域能力是横切层，独立成一个阶段。
+- **业务流程的划分判据是对外接口**：数几个接口就划几个流程。接口是客观事实，
+  不靠判断，也不会因为措辞不同而产生分歧。
 - **两个「能力」分属不同层**：商业能力 `capability` 是 product 里的业务归属域，
   领域能力 `domain` 是跨服务复用的横切能力。命名上严格区分，不通用。
 - **每层文档只有一个写入者**，跨层意见一律走澄清。人不直接改 AI 的文档，AI 不改 product。
 - **全项目只有一个 stage**，它回答的问题只有一个：现在该调哪个 skill。
   取件顺序按依赖链正向推进，新写的 product 锚点排在最后，因此中途加需求不会打断当前这一波。
-- **三道确认门**：`flow approve`、`activity approve`、`domain approve`。
+- **三道确认门**：`flow approve`（逐个流程）、`activity approve`（按服务）、`domain approve`。
   每道门都是 AI 先打印完整变更清单、人选「通过」或「我要补充」，选了通过 AI 才执行 approve。
   **code 阶段没有门**——设计决策已在前三道定完，正确性由 verify 判定。
 - **澄清在会话内完成**。flow / activity / domain 每轮至少提 3 个问题，用选择工具问人，
@@ -125,31 +164,38 @@ skills/blueprint/
    而 lock 里只有哈希还原不出字段表，因此 approve 时一并记录契约表首列。
 8. **lock 增加 `rejected_domains`**。人否决过的能力提取候选记在这里，
    避免 activity skill 每轮重新识别、重复询问同一件事。
-9. **commit 覆盖整条流水线的产出，不限单个业务服务**。一波需求里多个服务一起推进，
+9. **业务活动归属服务，不归属流程**。一个服务的多个流程（对外接口）共享一个活动池，
+   活动目录与流程文件同层。这样同一次交付的不同入口能直接复用活动，
+   不必为了共用而把步骤上升成领域能力；代价是改一个共用活动会影响多个接口，
+   由 `activity changes` 标注影响面、人在确认门把关。
+10. **`service.md` 是轻文档**。它记录服务边界与流程/活动登记，供后续阶段读，
+   但脚本不校验、不哈希、不盖章，也不产生 stage。契约由流程文件与 activity.md 承担。
+   服务层因此不增加确认门，人的三道门不变。
+11. **commit 覆盖整条流水线的产出，不限单个业务服务**。一波需求里多个服务一起推进，
    它们属于同一次提交。提交信息按五层业务架构分行，由脚本生成。
    触发判据是「`lock.json` 有未提交变更且 lock 非空」——落在 lock 而非整个 `blueprint/` 目录，
    否则 init 刚生成的文件、人手写的 product 变更都会被误判成「有产出待提交」。
-10. **不校验流程图节点与流程步骤的对应关系**。归一化只能抹平标点与空白，抹不平措辞，
-    图文说的是同一件事却因几个字不同而卡住 approve，代价大于它保障的可读性。
-    只校验「含且仅含一个 mermaid 块、首行为 `flowchart`」与「『流程』是有序步骤」。
-11. **lib 比规范多三个模块**：`repo.mjs`（仓库模型）、`db.mjs`（snapshot）、
-    `install.mjs`（init）。规范列出的七个模块职责不变。
-12. **`schema pull` 依赖系统自带的 CLI**（`pg_dump` / `mysqldump` / `sqlite3`），
-    以保持脚本零 npm 依赖。sqlite 路径已端到端验证；postgres 与 mysql 走同一套语句拆分逻辑，
-    但未在真实库上实测。
-13. **`commit context` 的新增/修改判定依赖 `git status`**。非 git 仓库时无法区分，
-    一律算作修改。提交信息不细到业务动作（`A1 A2`）一级——那需要 `git show` 取旧版本逐个解析，
-    多轮 git 调用换来的信息量不值。
-14. **没有 upgrade 与 doctor**。母版仍在迭代，暂不为存量项目的平滑升级与安装体检投入；
-    `init` 幂等（生成物覆盖、定制物保留），重跑它就是刷新生成物。代价是 `config.yaml`
-    新增字段要手动补，模板结构变了要人工迁移文档。母版稳定后再补这两条命令。
-15. **模板是校验的唯一真相源**。规范把章节结构写在文档里，实现上则由 `config.mjs`
-    从 `blueprint/templates/*.md` 解析出章节表、哈希取材、编号前缀与 front-matter 字段白名单，
-    校验不再硬编码任何章节名。模板用 `<!-- bp: no-hash -->` 标记不参与哈希的章节，
-    用 `<!-- bp: numbered=A -->` 声明编号前缀。代价是改模板会让已 approve 文档的哈希失效，
-    且重跑 init 覆盖 templates 时项目内的定制会丢。
-16. **活动与能力的「行为规则」章节改称「动作」，编号 `R` 改为 `A`**，与业务架构层次里的
-    「业务动作」对齐。这是纯模板改动，脚本无需改动即生效。
+12. **不校验流程图节点与流程步骤的对应关系**。归一化只能抹平标点与空白，抹不平措辞，
+   图文说的是同一件事却因几个字不同而卡住 approve，代价大于它保障的可读性。
+   只校验「含且仅含一个 mermaid 块、首行为 `flowchart`」与「『流程』是有序步骤」。
+13. **lib 比规范多两个模块**：`repo.mjs`（仓库模型）与 `db.mjs`（snapshot）。
+   母版安装逻辑完全收在独立的 `bootstrap.mjs`，不进入项目运行时。规范列出的七个模块职责不变。
+14. **`schema pull` 依赖系统自带的 CLI**（`pg_dump` / `mysqldump` / `sqlite3`），
+   以保持脚本零 npm 依赖。sqlite 路径已端到端验证；postgres 与 mysql 走同一套语句拆分逻辑，
+   但未在真实库上实测。
+15. **`commit context` 的新增/修改判定依赖 `git status`**。非 git 仓库时无法区分，
+   一律算作修改。提交信息不细到业务动作（`A1 A2`）一级——那需要 `git show` 取旧版本逐个解析，
+   多轮 git 调用换来的信息量不值。
+16. **没有 upgrade 与 doctor**。母版仍在迭代，暂不为存量项目的平滑升级与安装体检投入；
+   `init` 幂等（生成物覆盖、定制物保留），重跑它就是刷新生成物。代价是 `config.yaml`
+   新增字段要手动补，模板结构变了要人工迁移文档。母版稳定后再补这两条命令。
+17. **模板是校验的唯一真相源**。规范把章节结构写在文档里，实现上则由 `config.mjs`
+   从 `blueprint/templates/*.md` 解析出章节表、哈希取材、编号前缀与 front-matter 字段白名单，
+   校验不再硬编码任何章节名。模板用 `<!-- bp: no-hash -->` 标记不参与哈希的章节，
+   用 `<!-- bp: numbered=A -->` 声明编号前缀。代价是改模板会让已 approve 文档的哈希失效，
+   且重跑 init 覆盖 templates 时项目内的定制会丢。
+18. **活动与能力的「行为规则」章节改称「动作」，编号 `R` 改为 `A`**，与业务架构层次里的
+   「业务动作」对齐。这是纯模板改动，脚本无需改动即生效。
 
 规范 §19 已知限制（type 中途变更、重命名等价于删除重建、schema pull 连生产库、
 tables 只声明列名、代码不计算哈希、并发协作未定义、以编译为门禁）在本实现中同样存在。

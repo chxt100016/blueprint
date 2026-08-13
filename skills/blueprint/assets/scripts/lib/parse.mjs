@@ -319,7 +319,7 @@ export function parseOrderedSteps(body) {
   return out;
 }
 
-/** 取「活动划分」条目:`- <slug>  <summary>` */
+/** 取「活动编排」条目:`- <slug>  <说明>` */
 export function parseActivityList(body) {
   const out = [];
   for (const line of String(body ?? '').split('\n')) {

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="900" viewBox="0 0 1540 900" role="img" aria-labelledby="title desc">
+  <title id="title">哈希与 lock 的变更传播</title><desc id="desc">product、flow、activity、domain、code 与 commit 之间如何利用哈希锁传播变化。</desc>
+  <defs><style>.bg{fill:#f8fafc}.doc{fill:#fff;stroke:#64748b;stroke-width:2;rx:13}.lock{fill:#dbeafe;stroke:#3b82f6;stroke-width:2;rx:13}.gate{fill:#fef3c7;stroke:#f59e0b;stroke-width:2;rx:28}.impl{fill:#dcfce7;stroke:#22c55e;stroke-width:2;rx:13}.warn{fill:#ffe4e6;stroke:#f43f5e;stroke-width:2;rx:13}.h{font:700 30px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#0f172a}.t{font:700 20px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#0f172a}.s{font:15px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#334155}.xs{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#334155}.arrow{stroke:#475569;stroke-width:2.5;fill:none;marker-end:url(#a)}.prop{stroke:#f43f5e;stroke-width:2.5;stroke-dasharray:8 6;fill:none;marker-end:url(#r)}</style><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker><marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#f43f5e"/></marker></defs>
+  <rect class="bg" width="1540" height="900"/><text class="h" x="52" y="58">哈希 + lock：生命周期的“记忆”与变更传播机制</text><text class="s" x="52" y="88">bp 不保存历史文档全文，只保存确认时的规范化哈希；当前文件就是唯一现实。</text>
+
+  <rect class="doc" x="50" y="150" width="230" height="120"/><text class="t" x="75" y="188">Product anchor</text><text class="xs" x="75" y="220">hashAnchor(title, body)</text><text class="s" x="75" y="248">人修改自然语言需求</text>
+  <rect class="gate" x="330" y="175" width="150" height="70"/><text class="t" x="365" y="218">flow approve</text>
+  <rect class="lock" x="530" y="135" width="300" height="150"/><text class="t" x="555" y="174">lock.services[id].flow</text><text class="xs" x="555" y="207">product_hash</text><text class="xs" x="555" y="232">flow_hash</text><text class="xs" x="555" y="257">approved_at</text>
+  <rect class="doc" x="885" y="150" width="260" height="120"/><text class="t" x="910" y="188">flow.md</text><text class="xs" x="910" y="220">hashDoc(fm-title + hashed sections)</text><text class="s" x="910" y="248">模板决定哪些章节参与</text>
+  <path class="arrow" d="M280 210H325"/><path class="arrow" d="M480 210H525"/><path class="arrow" d="M885 210H835"/>
+
+  <rect class="gate" x="330" y="395" width="170" height="70"/><text class="t" x="350" y="438">activity approve</text>
+  <rect class="lock" x="550" y="350" width="350" height="165"/><text class="t" x="575" y="389">service.activity + activities[].spec</text><text class="xs" x="575" y="423">service.activity.flow_hash</text><text class="xs" x="575" y="449">activity.spec.activity_hash</text><text class="xs" x="575" y="475">approved_at</text>
+  <rect class="doc" x="955" y="365" width="260" height="135"/><text class="t" x="980" y="403">activity.md</text><text class="xs" x="980" y="435">hashDoc(...)</text><text class="s" x="980" y="463">uses / depends_on / tables</text><text class="s" x="980" y="487">也进入 front-matter 哈希</text>
+  <path class="arrow" d="M415 395V310H680V290"/><path class="arrow" d="M500 430H545"/><path class="arrow" d="M955 430H905"/>
+
+  <rect class="gate" x="330" y="615" width="170" height="70"/><text class="t" x="355" y="658">domain approve</text>
+  <rect class="lock" x="550" y="565" width="350" height="175"/><text class="t" x="575" y="604">lock.domains[id].spec</text><text class="xs" x="575" y="638">domain_hash</text><text class="xs" x="575" y="663">contract_fields[]</text><text class="xs" x="575" y="688">introduced_by / approved_at</text><text class="s" x="575" y="716">contract_fields 用于“只增不改”</text>
+  <rect class="doc" x="955" y="590" width="260" height="135"/><text class="t" x="980" y="628">domain.md</text><text class="xs" x="980" y="660">hashDoc(...)</text><text class="s" x="980" y="688">契约表第一列 → contract_fields</text>
+  <path class="arrow" d="M500 650H545"/><path class="arrow" d="M955 650H905"/>
+
+  <rect class="impl" x="1260" y="365" width="230" height="360"/><text class="t" x="1290" y="405">code done / adopt</text><text class="xs" x="1290" y="443">impl.activity_hash</text><text class="xs" x="1290" y="468">或 impl.domain_hash</text><text class="xs" x="1290" y="493">files[]</text><text class="xs" x="1290" y="518">verified_at</text><text class="xs" x="1290" y="543">base_commit</text><text class="s" x="1290" y="585">spec hash ≠ impl hash</text><text class="s" x="1290" y="611">→ code.todo</text><text class="s" x="1290" y="652">不保存代码 hash</text><text class="s" x="1290" y="678">外部代码漂移不触发 stage</text>
+  <path class="arrow" d="M1215 430H1255"/><path class="arrow" d="M1215 650H1255"/>
+
+  <path class="prop" d="M165 270V430H325"/><text class="s" x="175" y="350">product 变 → flow.todo</text>
+  <path class="prop" d="M1015 270V350"/><text class="s" x="1025" y="322">flow 变 → activity.todo</text>
+  <path class="prop" d="M1085 500V555H1375V360"/><text class="s" x="1120" y="550">已批准 spec 变 → 实现过期</text>
+  <rect class="warn" x="50" y="785" width="1440" height="70"/><text class="s" x="75" y="815">模板也是哈希真相源：章节顺序、no-hash 标记或 front-matter 白名单变化，会改变 hashDoc 的输入；重跑 init 覆盖模板后可能让大量已批准对象进入偏离态。</text><text class="s" x="75" y="840">commit stage 的判据不是所有文档变更，而是 lock.json 有内容且在 git 中处于未提交状态。</text>
+</svg>

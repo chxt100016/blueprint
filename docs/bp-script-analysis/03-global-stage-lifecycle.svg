@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="820" viewBox="0 0 1640 820" role="img" aria-labelledby="title desc">
+  <title id="title">Blueprint 全局 stage 生命周期</title>
+  <desc id="desc">globalStage 的严格优先级、执行者、循环与新锚点延后机制。</desc>
+  <defs><style>.bg{fill:#f8fafc}.box{stroke-width:2.5;rx:14}.human{fill:#fef3c7;stroke:#f59e0b}.skill{fill:#ede9fe;stroke:#8b5cf6}.ready{fill:#dcfce7;stroke:#22c55e}.new{fill:#dbeafe;stroke:#3b82f6}.h{font:700 30px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#0f172a}.t{font:700 19px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#0f172a}.s{font:15px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;fill:#334155}.arrow{stroke:#475569;stroke-width:2.5;fill:none;marker-end:url(#a)}.loop{stroke:#8b5cf6;stroke-width:2.5;stroke-dasharray:8 6;fill:none;marker-end:url(#v)}</style><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker><marker id="v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#8b5cf6"/></marker></defs>
+  <rect class="bg" width="1640" height="820"/>
+  <text class="h" x="50" y="58">全项目只有一个 stage：按优先级取第一个非空待办集合</text>
+  <text class="s" x="50" y="88">这不是对象自然顺序的简单串联，而是每次重算后的严格优先级选择。</text>
+
+  <rect class="box human" x="45" y="180" width="160" height="125"/><text class="t" x="68" y="220">orphaned</text><text class="s" x="68" y="250">引用断裂</text><text class="s" x="68" y="276">人确认清理</text>
+  <rect class="box human" x="245" y="180" width="160" height="125"/><text class="t" x="278" y="220">blocked</text><text class="s" x="270" y="250">todo/schema 缺口</text><text class="s" x="278" y="276">人执行工单</text>
+  <rect class="box skill" x="445" y="180" width="160" height="125"/><text class="t" x="498" y="220">flow</text><text class="s" x="478" y="250">流程 + 活动划分</text><text class="s" x="492" y="276">flow skill</text>
+  <rect class="box skill" x="645" y="180" width="160" height="125"/><text class="t" x="684" y="220">activity</text><text class="s" x="670" y="250">活动契约</text><text class="s" x="674" y="276">activity skill</text>
+  <rect class="box skill" x="845" y="180" width="160" height="125"/><text class="t" x="894" y="220">domain</text><text class="s" x="873" y="250">横切能力契约</text><text class="s" x="882" y="276">domain skill</text>
+  <rect class="box skill" x="1045" y="180" width="160" height="125"/><text class="t" x="1098" y="220">code</text><text class="s" x="1076" y="250">实现 + verify</text><text class="s" x="1087" y="276">code skill</text>
+  <rect class="box skill" x="1245" y="180" width="160" height="125"/><text class="t" x="1293" y="220">commit</text><text class="s" x="1274" y="250">lock 有未提交变更</text><text class="s" x="1282" y="276">commit skill</text>
+  <rect class="box ready" x="1445" y="180" width="150" height="125"/><text class="t" x="1493" y="220">ready</text><text class="s" x="1474" y="250">无待办</text><text class="s" x="1484" y="276">流水线结束</text>
+  <path class="arrow" d="M205 242H240"/><path class="arrow" d="M405 242H440"/><path class="arrow" d="M605 242H640"/><path class="arrow" d="M805 242H840"/><path class="arrow" d="M1005 242H1040"/><path class="arrow" d="M1205 242H1240"/><path class="arrow" d="M1405 242H1440"/>
+
+  <rect class="box new" x="450" y="405" width="750" height="125"/>
+  <text class="t" x="480" y="448">新 product 锚点的特殊队列</text>
+  <text class="s" x="480" y="480">scanFlow 先处理已存在 service 的非 done；只要本波还有待办，unclaimed anchor 就不返回。</text>
+  <text class="s" x="480" y="508">flow/activity/domain/code/commit 全清空后，新锚点才重新以 flow.todo 浮上来。</text>
+  <path class="arrow" d="M1325 310V372H1200V400"/>
+  <path class="arrow" d="M450 468H410V310"/>
+
+  <path class="loop" d="M1325 305V650H525V310"/>
+  <text class="t" x="700" y="690">每个 skill 结束 → 再跑 BP stage → stage 变化则继续；不变则停止并报告</text>
+
+  <rect class="box human" x="45" y="575" width="360" height="135"/>
+  <text class="t" x="70" y="616">为什么 blocked 排在 flow 前？</text>
+  <text class="s" x="70" y="648">任何已批准实现对象的 todo/schema 缺口</text>
+  <text class="s" x="70" y="676">都会优先暂停全局推进，先交人消除副作用。</text>
+  <text class="s" x="50" y="770">注意：code.waiting 不进入全局 stage；它应由 domain 阶段消除。残留 waiting 通常由 validate 报无效 uses。</text>
+</svg>

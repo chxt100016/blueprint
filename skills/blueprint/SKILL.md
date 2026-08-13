@@ -1,6 +1,6 @@
 ---
 name: blueprint
-description: 初始化一个项目的 blueprint 规范驱动流水线。仅在用户明确要求「初始化 blueprint」「刷新 blueprint 生成物」时使用，不参与日常流水线——日常推进用 pipeline-<project> skill。
+description: 仅在用户明确要求「初始化 blueprint」或「刷新 blueprint 生成物」时使用。不参与日常流水线——日常推进用 pipeline-<project> skill。
 license: MIT
 compatibility: 需要 Node.js 18+（脚本零 npm 依赖，只用内置模块）；schema pull 另需系统自带的 pg_dump / mysqldump / sqlite3
 metadata:
@@ -21,15 +21,16 @@ metadata:
 
 ## 定位母版
 
-以下用 `SKILL_DIR` 代指本 SKILL.md **实际所在目录**，`BP_SRC` 代指 `$SKILL_DIR/assets/scripts/bp.mjs`。
+以下用 `SKILL_DIR` 代指本 SKILL.md **实际所在目录**，`BOOTSTRAP` 代指 `$SKILL_DIR/assets/bootstrap.mjs`。
+`BOOTSTRAP` 是独立的单文件安装器，只读取同级母版资产，不复用也不进入项目内的 `blueprint/scripts/`。
 
 具体路径取决于装法：手动拷贝就是 `.claude/skills/blueprint/` 或 `~/.claude/skills/blueprint/`；
 用 `npx skills add` 装的话，母本通常在 `~/.agents/skills/blueprint/`，
 再由 `~/.claude/skills/blueprint` 软链暴露——两条路径都能直接 `node` 运行，
-Node 会把软链解析成真实路径，`assets/` 就在旁边。不确定时先 `ls $SKILL_DIR/assets/scripts/bp.mjs` 确认。
+Node 会把软链解析成真实路径，`assets/` 就在旁边。不确定时先 `ls $SKILL_DIR/assets/bootstrap.mjs` 确认。
 
-`init` 必须用 `BP_SRC` 运行（项目内拷贝的 `blueprint/scripts/bp.mjs` 不含母版资产，会直接报错）。
-其余命令用项目内的 `node blueprint/scripts/bp.mjs`。
+初始化或刷新必须用 `BOOTSTRAP` 运行；`BP` 只指项目内的 `node blueprint/scripts/bp.mjs`，
+不再承担母版安装职责。
 
 ---
 
@@ -42,11 +43,9 @@ Node 会把软链解析成真实路径，`assets/` 就在旁边。不确定时�
 | 项 | 说明 | 建议值 |
 |---|---|---|
 | 项目名 | 会变成六个 skill 的后缀，如 `pipeline-shop` | 取仓库目录名 |
-| 项目类型 | `backend` / `frontend` / `fullstack`，决定 activity 是否含「交互」章节与 verify 范围 | 看仓库里有没有前端目录 |
+| 项目类型 | `backend` / `fullstack`，决定 activity 是否含「交互」章节与 verify 范围 | 有前端目录用 `fullstack`，否则用 `backend` |
 | 代码布局 | `layout.backend` / `layout.frontend` / `layout.domain` 的模板串 | 先扫一眼现有目录结构再建议 |
 | 编译命令 | `verify.backend` / `verify.frontend` | 从 package.json 的 scripts 里找 |
-| 数据库方言 | `postgres` / `mysql` / `sqlite` | 从依赖或配置里找 |
-| migration 表名 | 用于取 `source_version` | `schema_migrations` |
 
 布局模板串支持两组占位符：`{capability}`、`{service}`（业务活动）与 `{name}`（领域能力）。
 
@@ -64,17 +63,15 @@ src/domain/{name}/         →  @pricing.discount          得到  src/domain/di
 ### 2. 执行
 
 ```
-node $SKILL_DIR/assets/scripts/bp.mjs init \
+node $SKILL_DIR/assets/bootstrap.mjs \
   --root <项目根> \
   --project <项目名> \
-  --type <backend|frontend|fullstack> \
+  --type <backend|fullstack> \
   --layout-backend "src/modules/{capability}/" \
   --layout-frontend "src/pages/{capability}/" \
   --layout-domain "src/domain/{name}/" \
   --verify-backend "npx tsc --noEmit -p tsconfig.server.json" \
-  --verify-frontend "npx tsc --noEmit -p tsconfig.web.json" \
-  --db-dialect postgres \
-  --db-migration-table schema_migrations
+  --verify-frontend "npx tsc --noEmit -p tsconfig.web.json"
 ```
 
 脚本会：拷贝 `scripts/` 与对应类型的 `templates/`；生成 `config.yaml`、`WORKFLOW.md`、
@@ -85,11 +82,13 @@ node $SKILL_DIR/assets/scripts/bp.mjs init \
 
 ### 3. 收尾提示
 
-告诉用户还需要手动做三件事：
+告诉用户还需要手动做四件事：
 
 1. 手写 `blueprint/CONVENTIONS.md`——code skill 每次都会读它，写得越具体代码越贴合
 2. 写 `blueprint/context/db.yaml`（不入库）
 3. 首次运行 `node blueprint/scripts/bp.mjs schema pull`
+4. 按本项目实际结构填 `config.always_readable`（共享工具、类型定义那类目录），
+   init 不猜这一项，留空则每次 `bp scope` 只给活动自己的目录
 
 然后在 `blueprint/product/` 下写第一个商业能力文件，调用 `pipeline-<project>` 开始。
 
@@ -98,9 +97,9 @@ node $SKILL_DIR/assets/scripts/bp.mjs init \
 已有代码的项目不要试图一次性把全仓纳入。按这个顺序：
 
 1. `init` → `schema pull`
-2. 挑 1~2 个近期在改的业务服务，人写 product 锚点
-3. flow skill 生成流程与活动划分 → `bp flow approve <service>`
-4. activity skill 生成活动文档 → `bp activity approve <service>`
+2. 挑 1~2 个近期在改的业务服务，人写 product 锚点（一个标题写一次完整的对外交付）
+3. flow skill 按对外接口划分流程、生成活动编排 → 逐个 `bp flow approve <flow>`
+4. activity skill 生成活动文档 → `bp activity approve <service>`（一次覆盖该服务全部活动）
 5. domain skill 补齐被 `uses` 引用的领域能力 → `bp domain approve <@id>`
 6. 人手写这些活动的 codemap
 7. `bp code adopt --all` 把当前状态盖章为基线（跳过 verify，但仍校验 validate 与 codemap）
@@ -115,7 +114,7 @@ node $SKILL_DIR/assets/scripts/bp.mjs init \
 母版改了、想把新版刷进已有项目时，用原来那条 init 命令重跑即可：
 
 ```
-node $SKILL_DIR/assets/scripts/bp.mjs init --root <项目根> --project <项目名> --type <类型>
+node $SKILL_DIR/assets/bootstrap.mjs --root <项目根> --project <项目名> --type <类型>
 ```
 
 生成物覆盖，定制物保留。**`config.yaml` 已存在就完全不动**——母版新增了配置字段的话，

@@ -9,7 +9,8 @@ export function codemapPath(root, id) {
     const [group, name] = splitDomainId(id);
     return bpPath(root, 'codemap', `@${group}`, `${name}.yaml`);
   }
-  const [capability, service, activity] = String(id).split('.');
+  // 活动 id 是 <cap>.<svc>.activity.<name>,标记段不进路径:codemap 下只有活动与领域能力
+  const [capability, service, , activity] = String(id).split('.');
   return bpPath(root, 'codemap', capability, service, `${activity}.yaml`);
 }
 

@@ -1,8 +1,11 @@
 ---
-id:
-title:
-tables: []
+id:                 # 形如 "@<领域>.<能力名>",与路径 domain/<领域>/<能力名>/ 双射
+title:              # 领域能力的中文名
+tables: []          # 逐列声明读写的表:[{name: orders, columns: [id, total_amount]}]
 ---
+
+<!-- 字段以上表为准,不得新增:本文件的 front-matter 键即校验时的字段白名单。
+     没有 entry(只被同仓代码调用),也没有 depends_on(领域能力之间不允许互相引用)。 -->
 
 ## 职责
 

@@ -4,7 +4,7 @@ import {
   findSection, sectionTitles, extractFences,
   parseOrderedSteps, parseRules, parseTableFirstColumn,
 } from './parse.mjs';
-import { splitDomainId } from './config.mjs';
+import { splitDomainId, splitUnitId, serviceOf, ACTIVITY_MARK } from './config.mjs';
 import { anchorOf, toArray } from './repo.mjs';
 
 function err(list, where, msg) {
@@ -66,38 +66,44 @@ function checkTables(errors, where, tables) {
 
 // --------------------------------------------------------------------- flow
 
-export function validateService(repo, serviceId) {
+/** 单个业务流程 = 一个对外接口。 */
+export function validateFlow(repo, flowId) {
   const errors = [];
-  const svc = repo.services.get(serviceId);
-  const where = serviceId;
-  if (!svc) { err(errors, where, '业务服务不存在'); return errors; }
-  if (!svc.exists) { err(errors, where, `缺少 ${path.relative(repo.root, svc.flowPath)}`); return errors; }
+  const flow = repo.flows.get(flowId);
+  const where = flowId;
+  if (!flow) { err(errors, where, '业务流程不存在'); return errors; }
 
   const tpl = repo.cfg.templates.flow;
-  checkSections(errors, where, sectionTitles(svc.sections), tpl.titles);
-  checkFmFields(errors, where, svc.fm, tpl.fmFields);
+  checkSections(errors, where, sectionTitles(flow.sections), tpl.titles);
+  checkFmFields(errors, where, flow.fm, tpl.fmFields);
 
-  if (svc.fm.service !== serviceId) {
-    err(errors, where, `front-matter 的 service (${svc.fm.service ?? '缺失'}) 与路径不一致`);
+  if (flow.fm.flow !== flowId) {
+    err(errors, where, `front-matter 的 flow (${flow.fm.flow ?? '缺失'}) 与路径不一致`);
   }
-  if (!svc.fm.title) err(errors, where, 'front-matter 缺少 title');
+  if (!flow.fm.title) err(errors, where, 'front-matter 缺少 title');
 
-  const ref = svc.fm.product;
+  // entry:一个流程一个对外接口,接口是流程的属性而不是活动的
+  const entry = flow.fm.entry || {};
+  for (const k of tpl.entryFields) {
+    if (!entry[k]) err(errors, where, `entry.${k} 必填(模板 templates/flow.md 要求)`);
+  }
+  for (const k of Object.keys(entry)) {
+    if (!tpl.entryFields.includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
+  }
+
+  const ref = flow.fm.product;
   if (!ref || typeof ref !== 'string' || !ref.includes('#')) {
     err(errors, where, 'product 应形如 `<商业能力>#<业务服务>`');
-  } else {
-    const found = anchorOf(repo, ref);
-    if (!found) err(errors, where, `product 锚点 \`${ref}\` 不存在`);
-    const users = repo.anchorUsers.get(ref) || [];
-    if (users.length > 1) err(errors, where, `锚点 \`${ref}\` 被多个业务服务引用: ${users.join(', ')}`);
+  } else if (!anchorOf(repo, ref)) {
+    err(errors, where, `product 锚点 \`${ref}\` 不存在`);
   }
 
-  checkNonEmpty(errors, where, svc.sections, tpl.titles);
+  checkNonEmpty(errors, where, flow.sections, tpl.titles);
 
   // 流程图:含且仅含一个 mermaid 代码块,首行为 flowchart。
   // 图与「流程」步骤的逐条对应不做校验——归一化只能抹平标点空白,抹不平措辞,
   // 图文说的是同一件事却因几个字不同而卡住 approve,代价远大于它保障的可读性。
-  const diagramSec = findSection(svc.sections, '流程图');
+  const diagramSec = findSection(flow.sections, '流程图');
   const fences = diagramSec ? extractFences(diagramSec.body).filter((f) => f.lang === 'mermaid') : [];
   if (fences.length !== 1) {
     err(errors, where, `「流程图」应含且仅含一个 mermaid 代码块,实际 ${fences.length} 个`);
@@ -105,35 +111,69 @@ export function validateService(repo, serviceId) {
     err(errors, where, '「流程图」的 mermaid 首行应为 `flowchart`');
   }
 
-  // 「流程」必须是有序步骤:changes 清单要数步骤数,活动划分也由它推导
-  if (!parseOrderedSteps(findSection(svc.sections, '流程')?.body || '').length) {
+  // 「流程」必须是有序步骤:changes 清单要数步骤数
+  if (!parseOrderedSteps(findSection(flow.sections, '流程')?.body || '').length) {
     err(errors, where, '「流程」中没有形如 `1. xxx` 的有序步骤');
   }
 
-  // 活动划分
-  const listSec = findSection(svc.sections, '活动划分');
-  const items = svc.activityList;
+  // 活动编排:本流程按顺序用到哪些活动。引用正向存放,活动不记录自己被谁编排
+  const listSec = findSection(flow.sections, '活动编排');
+  const items = flow.activityList;
   if (listSec && listSec.body.trim() && !items.length) {
-    err(errors, where, '「活动划分」条目应形如 `- <slug>  <一句话说明>`');
+    err(errors, where, '「活动编排」条目应形如 `- <slug>  <在本流程中的作用>`');
   }
   const seen = new Set();
   for (const it of items) {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(it.slug)) {
       err(errors, where, `业务活动 slug \`${it.slug}\` 不是合法目录名(小写字母、数字、连字符)`);
     }
-    if (seen.has(it.slug)) err(errors, where, `业务活动 slug \`${it.slug}\` 重复`);
+    if (seen.has(it.slug)) err(errors, where, `活动编排中 \`${it.slug}\` 重复`);
     seen.add(it.slug);
-    if (it.loose) err(errors, where, `活动划分条目 \`${it.slug}\` 的 slug 与说明之间应留两个以上空格`);
+    if (it.loose) err(errors, where, `活动编排条目 \`${it.slug}\` 的 slug 与说明之间应留两个以上空格`);
+  }
+  return errors;
+}
+
+/**
+ * 服务级校验:跨流程、跨活动才成立的事实。
+ * 单个流程自身的问题在 validateFlow 里查,不在这里重复。
+ */
+export function validateService(repo, serviceId) {
+  const errors = [];
+  const svc = repo.services.get(serviceId);
+  const where = serviceId;
+  if (!svc) { err(errors, where, '业务服务不存在'); return errors; }
+  if (!svc.flows.length) {
+    err(errors, where, `目录存在但没有任何业务流程文件: ${path.relative(repo.root, svc.dir)}`);
+    return errors;
   }
 
-  // 划分与目录一一对应:活动层 approve 之后才校验
+  // 一个服务目录只认领一个 product 锚点:同锚点的流程必须放在一起,否则活动无法共用
+  const anchors = new Set();
+  for (const fid of svc.flows) {
+    const ref = repo.flows.get(fid)?.product;
+    if (ref) anchors.add(ref);
+  }
+  if (anchors.size > 1) {
+    err(errors, where, `同一服务目录下的流程声明了多个 product 锚点: ${[...anchors].join(', ')}`);
+  }
+  for (const ref of anchors) {
+    const others = (repo.anchorUsers.get(ref) || [])
+      .filter((fid) => serviceOf(fid) !== serviceId);
+    if (others.length) {
+      err(errors, where, `锚点 \`${ref}\` 还被其他服务目录的流程引用: ${others.join(', ')}`);
+    }
+  }
+
+  // 活动目录 ↔ 各流程编排的并集,一一对应:活动层 approve 之后才校验
+  const listed = new Set(svc.activityList.map((it) => it.slug));
   if (repo.lock.services?.[serviceId]?.activity) {
     const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
-    for (const it of items) {
-      if (!dirs.has(it.slug)) err(errors, where, `活动划分中的 \`${it.slug}\` 缺少 ${it.slug}/activity.md`);
+    for (const slug of listed) {
+      if (!dirs.has(slug)) err(errors, where, `活动编排中的 \`${slug}\` 缺少 ${slug}/activity.md`);
     }
     for (const d of dirs) {
-      if (!seen.has(d)) err(errors, where, `活动目录 \`${d}\` 不在「活动划分」中`);
+      if (!listed.has(d)) err(errors, where, `活动目录 \`${d}\` 不被任何流程编排`);
     }
   }
 
@@ -159,10 +199,12 @@ export function validateActivity(repo, id) {
 
   if (act.fm.id !== id) err(errors, where, `front-matter 的 id (${act.fm.id ?? '缺失'}) 与路径不一致`);
   if (!act.fm.title) err(errors, where, 'front-matter 缺少 title');
+  // summary 由活动自己持有:它被多个流程编排,说明不能寄存在某一份流程文档里
+  if (!act.fm.summary) err(errors, where, 'front-matter 缺少 summary(一句话说明,由活动自己持有)');
 
   const svc = repo.services.get(act.service);
   if (svc && !svc.activityList.some((i) => i.slug === act.slug)) {
-    err(errors, where, `\`${act.slug}\` 不在 ${act.service} 的「活动划分」中`);
+    err(errors, where, `\`${act.slug}\` 不被 ${act.service} 的任何流程编排`);
   }
 
   // 时序图
@@ -176,14 +218,14 @@ export function validateActivity(repo, id) {
     checkParticipants(errors, where, fences[0].code, act);
   }
 
-  // depends_on
+  // depends_on:限同服务内。活动归属服务而不是流程,所以同服务跨流程的依赖是合法的
   for (const dep of act.depends_on) {
-    if (typeof dep !== 'string' || dep.split('.').length !== 3) {
-      err(errors, where, `depends_on 中 \`${dep}\` 不是业务活动 id`);
+    const parts = typeof dep === 'string' ? splitUnitId(dep) : [];
+    if (!parts.length || parts[2] !== ACTIVITY_MARK) {
+      err(errors, where, `depends_on 中 \`${dep}\` 不是业务活动 id(应形如 <cap>.<svc>.${ACTIVITY_MARK}.<name>)`);
       continue;
     }
-    const depService = dep.split('.').slice(0, 2).join('.');
-    if (depService !== act.service) {
+    if (serviceOf(dep) !== act.service) {
       err(errors, where, `depends_on 中 \`${dep}\` 跨服务,跨服务复用请走 uses`);
       continue;
     }
@@ -200,15 +242,6 @@ export function validateActivity(repo, id) {
   checkNonEmpty(errors, where, act.sections, expected);
   checkRules(errors, where, act.sections, tpl.numbered);
   checkTables(errors, where, act.fm.tables);
-
-  // entry:模板 entry 下列出的子键即本 type 必填的入口
-  const entry = act.fm.entry || {};
-  for (const k of tpl.entryFields) {
-    if (!entry[k]) err(errors, where, `entry.${k} 必填(模板 templates/activity.md 要求)`);
-  }
-  for (const k of Object.keys(entry)) {
-    if (!tpl.entryFields.includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
-  }
   return errors;
 }
 
@@ -221,7 +254,7 @@ function checkParticipants(errors, where, code, act) {
       if (!name) continue;
       const token = name.trim().replace(/^["']|["']$/g, '');
       const looksLikeId = /^@[a-z0-9-]+\.[a-z0-9-]+$/.test(token) ||
-        /^[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+$/.test(token);
+        new RegExp(`^[a-z0-9-]+\\.[a-z0-9-]+\\.${ACTIVITY_MARK}\\.[a-z0-9-]+$`).test(token);
       if (!looksLikeId) continue;
       if (token === act.id) continue;
       if (!allowed.has(token)) {
@@ -320,28 +353,31 @@ export function contractFields(dom) {
 export function validateAll(repo) {
   const all = [];
   for (const id of repo.services.keys()) all.push(...validateService(repo, id));
+  for (const id of repo.flows.keys()) all.push(...validateFlow(repo, id));
   for (const id of repo.activities.keys()) all.push(...validateActivity(repo, id));
   for (const id of repo.domains.keys()) all.push(...validateDomain(repo, id));
-  // product 侧:锚点被多个服务引用已在服务侧报出;这里只查孤儿目录
-  for (const svc of repo.services.values()) {
-    if (!svc.exists) err(all, svc.id, `目录存在但缺少 flow.md: ${path.relative(repo.root, svc.dir)}`);
-  }
   return all;
+}
+
+/** 服务及其下全部流程、活动。 */
+function validateServiceTree(repo, serviceId) {
+  const out = validateService(repo, serviceId);
+  const svc = repo.services.get(serviceId);
+  for (const fid of svc?.flows || []) out.push(...validateFlow(repo, fid));
+  for (const aid of svc?.activities || []) out.push(...validateActivity(repo, aid));
+  return out;
 }
 
 export function validateId(repo, id) {
   if (!id) return validateAll(repo);
-  if (repo.services.has(id)) {
-    const out = validateService(repo, id);
-    for (const aid of repo.services.get(id).activities) out.push(...validateActivity(repo, aid));
-    return out;
-  }
+  if (repo.services.has(id)) return validateServiceTree(repo, id);
+  if (repo.flows.has(id)) return validateFlow(repo, id);
   if (repo.activities.has(id)) return validateActivity(repo, id);
   if (repo.domains.has(id)) return validateDomain(repo, id);
   if (repo.products.has(id)) {
     const out = [];
     for (const svc of repo.services.values()) {
-      if (svc.capability === id) out.push(...validateService(repo, svc.id));
+      if (svc.capability === id) out.push(...validateServiceTree(repo, svc.id));
     }
     return out;
   }

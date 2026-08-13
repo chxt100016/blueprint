@@ -9,6 +9,12 @@ import { parseYaml, readFileSafe, parseTemplateSpec } from './parse.mjs';
 
 export const BP_DIR = 'blueprint';
 
+// id 第三段的层级标记。加它是为了让 id 自解释:业务流程与业务活动都挂在服务下,
+// 若共用一个三段命名空间,解析 id 就得先查 repo 才知道是哪一层,
+// 而 status / read / delete 这些命令在 validate 之前就要解析 id,重名校验拦不住那个时间差。
+export const FLOW_MARK = 'flow';
+export const ACTIVITY_MARK = 'activity';
+
 export function findRoot(start = process.cwd()) {
   let dir = path.resolve(start);
   for (;;) {
@@ -27,7 +33,7 @@ export function loadConfig(root) {
   const file = bpPath(root, 'config.yaml');
   const raw = readFileSafe(file);
   if (raw === null) {
-    throw new Error(`找不到 ${path.relative(process.cwd(), file)},先运行 bp init`);
+    throw new Error(`找不到 ${path.relative(process.cwd(), file)},先用 blueprint skill 初始化`);
   }
   const cfg = parseYaml(raw) || {};
   cfg.type = cfg.type || 'backend';
@@ -35,8 +41,6 @@ export function loadConfig(root) {
   cfg.overrides = cfg.overrides || {};
   cfg.verify = cfg.verify || {};
   cfg.always_readable = cfg.always_readable || [];
-  cfg.db = cfg.db || {};
-  cfg.commit = cfg.commit || {};
   cfg.templates = loadTemplateSpec(root);
   return cfg;
 }
@@ -76,7 +80,6 @@ export function interpolate(str) {
 /** 该 config.type 下需要产出的作用域。 */
 export function scopesOfType(cfg) {
   if (cfg.type === 'backend') return ['backend'];
-  if (cfg.type === 'frontend') return ['frontend'];
   return ['backend', 'frontend'];
 }
 
@@ -86,7 +89,8 @@ function fill(tpl, vars) {
 
 /**
  * 由 id 推导代码作用域目录。
- * 活动 id:`<capability>.<service>.<activity>`;领域能力 id:`@<domain>.<name>`。
+ * 活动 id:`<capability>.<service>.activity.<name>`;领域能力 id:`@<domain>.<name>`。
+ * 只取前两段,标记段与活动名都不参与——代码目录按服务组织,不按流程。
  */
 export function resolveScope(cfg, id) {
   if (isDomainId(id)) {
@@ -120,12 +124,35 @@ export function isDomainId(id) {
   return String(id).startsWith('@');
 }
 
-/** id 层级:capability | service | activity | domain */
+/** id 层级:capability | service | flow | activity | domain */
 export function idKind(id) {
   if (isDomainId(id)) return 'domain';
   const parts = String(id).split('.');
   if (parts.length === 1) return 'capability';
   if (parts.length === 2) return 'service';
-  if (parts.length === 3) return 'activity';
+  if (parts.length === 4 && parts[2] === FLOW_MARK) return 'flow';
+  if (parts.length === 4 && parts[2] === ACTIVITY_MARK) return 'activity';
   return 'unknown';
+}
+
+/** `<cap>.<svc>.<mark>.<name>` → [capability, service, mark, name];不合法返回 []。 */
+export function splitUnitId(id) {
+  const parts = String(id).split('.');
+  if (parts.length !== 4) return [];
+  if (parts[2] !== FLOW_MARK && parts[2] !== ACTIVITY_MARK) return [];
+  return parts;
+}
+
+/** 由 id 推导文档路径(相对 blueprint/)。路径里不含标记段。 */
+export function idToSpecPath(id) {
+  const [capability, service, mark, name] = splitUnitId(id);
+  if (!capability) return null;
+  if (mark === FLOW_MARK) return path.join('spec', capability, service, `${name}.md`);
+  return path.join('spec', capability, service, name, 'activity.md');
+}
+
+/** 活动/流程 id 的所属服务 id。 */
+export function serviceOf(id) {
+  const parts = String(id).split('.');
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : null;
 }

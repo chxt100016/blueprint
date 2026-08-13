@@ -1,31 +1,19 @@
-project: {{PROJECT}}
-type: fullstack              # backend | frontend | fullstack
+project: <<PROJECT>>
+type: fullstack              # backend | fullstack
 
 # {capability} 与 {service} 由业务活动 id 的对应段替换,{name} 由领域能力 id 的第二段替换
 layout:
-  backend: "{{LAYOUT_BACKEND}}"
-  frontend: "{{LAYOUT_FRONTEND}}"
-  domain: "{{LAYOUT_DOMAIN}}"
+  backend: "<<LAYOUT_BACKEND>>"
+  frontend: "<<LAYOUT_FRONTEND>>"
+  domain: "<<LAYOUT_DOMAIN>>"
 
-# 全局可读路径,追加到每次 bp scope 的输出末尾
-always_readable:
-  - src/shared/
-  - src/types/
+# 全局可读路径,追加到每次 bp scope 的输出末尾。
+# 填共享工具、类型定义这类跨活动都要看的目录,按本项目实际结构写;不确定就先留空。
+always_readable: []
 
 # 按商业能力覆盖 layout,例如 billing 在遗留目录里
 overrides: {}
 
 verify:
-  backend: "{{VERIFY_BACKEND}}"
-  frontend: "{{VERIFY_FRONTEND}}"
-
-db:
-  dialect: {{DB_DIALECT}}
-  migration_table: {{DB_MIGRATION_TABLE}}
-
-commit:
-  type_rules:
-    has_new_activity: feat
-    only_modified: fix
-
-blueprint_version: "{{VERSION}}"
+  backend: "<<VERIFY_BACKEND>>"
+  frontend: "<<VERIFY_FRONTEND>>"
