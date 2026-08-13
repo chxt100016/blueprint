@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { bpPath, isDomainId, ACTIVITY_MARK } from '../../lib/config.mjs';
+import { bpPath, isDomainId } from '../../lib/config.mjs';
 import { codemapPath } from '../../lib/codemap.mjs';
 import { relatedDomains } from '../../lib/repo.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
@@ -17,18 +17,15 @@ function timestamp() {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function similarAnchors(repo, flow) {
-  const words = new Set();
-  for (const item of flow.activityList) for (const char of item.summary || '') words.add(char);
+/** 与被删服务名字接近、且还没有 spec 产出的业务服务:多半是人改名后的新名字。 */
+function similarServices(repo, service) {
+  const chars = new Set(service.slug);
   const scored = [];
-  for (const product of repo.products.values()) {
-    for (const title of product.anchors.keys()) {
-      const ref = `${product.id}#${title}`;
-      if ((repo.anchorUsers.get(ref) || []).length) continue;
-      let hit = 0;
-      for (const char of title) if (words.has(char)) hit++;
-      if (hit >= 2) scored.push({ ref, hit });
-    }
+  for (const other of repo.services.values()) {
+    if (other.id === service.id || !other.product || other.flows.length) continue;
+    let hit = 0;
+    for (const char of new Set(other.slug)) if (chars.has(char)) hit++;
+    if (hit >= 3) scored.push({ id: other.id, rel: other.productRel, hit });
   }
   return scored.sort((a, b) => b.hit - a.hit).slice(0, 3);
 }
@@ -39,57 +36,37 @@ export function run(cli, [id]) {
   const lines = [];
   const file = bpPath(root, 'todo', `${timestamp()}_${sanitize(id)}_manual.md`);
 
-  if (repo.flows.has(id)) {
-    const flow = repo.flows.get(id);
-    const service = repo.services.get(flow.service);
+  // 服务由 product 文档定义,文档没了就是整个服务待清理——比逐个流程报废更贴近实际:
+  // 人改的是 product 里的文件名,受影响的从来不是某一个接口
+  if (repo.services.has(id) && !repo.services.get(id).product) {
+    const service = repo.services.get(id);
     lines.push(`# ${id} 清理确认`, '', '## 情况', '');
-    lines.push(`\`${flow.rel}\` 声明的锚点 \`${flow.product}\` 在 product 中不存在。`, '');
+    lines.push(`业务服务 \`${id}\` 的业务描述 \`${service.productRel}\` 不存在,`
+      + `但 \`${service.rel}/\` 下已有 ${service.flows.length} 个流程、${service.activities.length} 个活动。`, '');
     lines.push('**这可能是两种情况之一:**', '');
-    lines.push(`- product 中该标题被重命名 → 修改 ${flow.slug}.md front-matter 的 \`product\` 字段指向新标题,删除本文件,不要执行下方清理`);
-    lines.push('- 该业务流程(对外接口)已废弃 → 按下方清单执行清理', '');
-    const similar = similarAnchors(repo, flow);
+    lines.push(`- product 里的文件被重命名 → 把 \`${service.rel}/\` 一并改成同样的名字,删除本文件,不要执行下方清理`);
+    lines.push('- 该业务服务已废弃 → 按下方清单执行清理', '');
+    const similar = similarServices(repo, service);
     if (similar.length) {
       lines.push('## 疑似重命名目标', '');
-      for (const item of similar) lines.push(`- \`${item.ref}\`(与活动编排有词面重合)`);
+      for (const item of similar) lines.push(`- \`${item.id}\`(${item.rel},名字相近且还没有产出)`);
       lines.push('');
     }
-    // 活动归属服务、可被多个流程编排,只有仅被本流程编排的才随之删除
-    const exclusive = [];
-    const shared = [];
-    for (const item of flow.activityList) {
-      const aid = `${flow.service}.${ACTIVITY_MARK}.${item.slug}`;
-      const others = (repo.activityUsers.get(aid) || []).filter((fid) => fid !== id);
-      (others.length ? shared : exclusive).push({ slug: item.slug, aid, others });
-    }
-    if (shared.length) {
-      lines.push('## 保留的活动(其他流程还在编排)', '');
-      for (const item of shared) lines.push(`- ${item.slug}  仍被 ${item.others.join(', ')} 编排`);
-      lines.push('');
-    }
-    const onlyMine = [];
-    for (const domain of relatedDomains(repo, flow.service)) {
-      const users = domain.usedBy.filter((activity) => exclusive.every((e) => e.aid !== activity));
-      if (!users.length) onlyMine.push(domain.id);
-    }
-    if (onlyMine.length) {
-      lines.push('## 引用关系', '', '以下领域能力仅被本流程独占的活动引用,清理后将变为 orphaned:', '');
-      for (const domain of onlyMine) lines.push(`- ${domain}`);
+    const domains = relatedDomains(repo, id)
+      .filter((domain) => domain.usedBy.every((activity) => activity.startsWith(`${id}.`)));
+    if (domains.length) {
+      lines.push('## 引用关系', '', '以下领域能力仅被本服务的活动引用,清理后将变为 error:', '');
+      for (const domain of domains) lines.push(`- ${domain.id}`);
       lines.push('');
     }
     lines.push('## 待删除(文档层)', '');
-    lines.push(`- ${flow.rel}`);
-    lines.push(`- ${path.relative(root, flow.reviewPath)}(若存在)`);
-    for (const item of exclusive) {
-      lines.push(`- ${service.rel}/${item.slug}/  整个目录(仅被本流程编排)`);
-      lines.push(`- blueprint/codemap/${flow.capability}/${service.slug}/${item.slug}.yaml`);
-    }
-    lines.push(`- lock.json 中 flows.${id}${exclusive.length ? ` 与 activities 下 ${exclusive.map((e) => e.aid).join('、')}` : ''}`, '');
-    if (service.flows.length === 1) {
-      lines.push(`> 这是 ${flow.service} 的最后一个流程,删除后整个服务目录 \`${service.rel}/\` 都可以删掉。`, '');
-    }
+    lines.push(`- ${service.rel}/  整个目录(含 ${service.flows.length} 个流程文件与全部活动目录)`);
+    lines.push(`- blueprint/codemap/${service.capability}/${service.slug}/  整个目录`);
+    lines.push(`- lock.json 中 services["${id}"]、flows 下 ${service.flows.join('、') || '(无)'}`
+      + `、activities 下 ${service.activities.join('、') || '(无)'}`, '');
     const codeFiles = new Set();
-    for (const item of exclusive) {
-      for (const codeFile of repo.lock.activities?.[item.aid]?.impl?.files || []) codeFiles.add(codeFile);
+    for (const aid of service.activities) {
+      for (const codeFile of repo.lock.activities?.[aid]?.impl?.files || []) codeFiles.add(codeFile);
     }
     lines.push('## 待删除(代码层,需人再次确认)', '');
     if (codeFiles.size) for (const codeFile of codeFiles) lines.push(`- ${codeFile}`);
@@ -120,7 +97,7 @@ export function run(cli, [id]) {
         if (domain && domain.usedBy.length === 1 && domain.usedBy[0] === id) orphanDomains.push(use);
       }
       if (orphanDomains.length) {
-        lines.push('## 引用关系', '', '以下领域能力仅被本活动引用,清理后将变为 orphaned:', '');
+        lines.push('## 引用关系', '', '以下领域能力仅被本活动引用,清理后将变为 error:', '');
         for (const domain of orphanDomains) lines.push(`- ${domain}`);
         lines.push('');
       }

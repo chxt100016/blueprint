@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// 独立的母版文件安装器，不依赖项目内 blueprint 运行时。
+// 独立的母版安装器，不依赖项目内 blueprint 运行时。
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ASSETS = path.dirname(fileURLToPath(import.meta.url));
+const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ASSETS = path.join(SKILL_DIR, 'assets');
+const VERSION = '1.0.0';
 const argv = process.argv.slice(2);
 
 function option(name, fallback = null) {
@@ -33,30 +35,20 @@ function render(file, values) {
 
 function main() {
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log('用法: bootstrap.mjs --type <backend|fullstack> --project <名称> [--root <目录>]');
+    console.log('用法: bootstrap.mjs --project <名称> [--root <目录>]');
     return;
   }
 
   const project = option('project');
-  const type = option('type', 'backend');
   const root = path.resolve(option('root', process.cwd()));
   if (!project) throw new Error('缺少 --project <名称>');
-  if (!['backend', 'fullstack'].includes(type)) {
-    throw new Error('type 只能是 backend / fullstack');
-  }
-
-  const manifest = JSON.parse(read(path.join(ASSETS, 'bp-assets.json')));
-  if (!manifest.blueprint_assets || !manifest.version) throw new Error('母版资产标记无效');
 
   const values = {
     PROJECT: project,
-    TYPE: type,
-    VERSION: manifest.version,
-    LAYOUT_BACKEND: option('layout-backend', 'src/modules/{capability}/'),
-    LAYOUT_FRONTEND: option('layout-frontend', 'src/pages/{capability}/'),
+    VERSION,
+    LAYOUT_APP: option('layout-app', 'src/modules/{capability}/'),
     LAYOUT_DOMAIN: option('layout-domain', 'src/domain/{name}/'),
-    VERIFY_BACKEND: option('verify-backend', 'npx tsc --noEmit'),
-    VERIFY_FRONTEND: option('verify-frontend', 'npx tsc --noEmit'),
+    VERIFY_APP: option('verify-app', 'npx tsc --noEmit'),
   };
   const blueprint = (...parts) => path.join(root, 'blueprint', ...parts);
 
@@ -65,11 +57,11 @@ function main() {
   for (const stale of ['commands/init.mjs', 'lib/install.mjs']) {
     fs.rmSync(blueprint('scripts', ...stale.split('/')), { force: true });
   }
+  fs.rmSync(blueprint('WORKFLOW.md'), { force: true });
   fs.rmSync(blueprint('templates'), { recursive: true, force: true });
-  copy(path.join(ASSETS, 'templates', type), blueprint('templates'));
-  write(blueprint('WORKFLOW.md'), render(path.join(ASSETS, 'WORKFLOW.md'), values));
+  copy(path.join(ASSETS, 'templates'), blueprint('templates'));
 
-  for (const name of ['pipeline', 'flow', 'activity', 'domain', 'code', 'commit']) {
+  for (const name of ['pipeline', 'flow', 'activity', 'domain', 'code', 'commit', 'ui']) {
     const target = path.join(root, '.claude', 'skills', `${name}-${project}`, 'SKILL.md');
     write(target, render(path.join(ASSETS, 'skills', `${name}.md`), values));
   }
@@ -77,9 +69,9 @@ function main() {
   // 定制物：只在首次初始化时创建。
   const config = blueprint('config.yaml');
   if (!fs.existsSync(config)) {
-    write(config, render(path.join(ASSETS, 'config', `${type}.yaml`), values));
+    write(config, render(path.join(ASSETS, 'config.yaml'), values));
   }
-  for (const directory of ['product', 'spec', 'domain', 'codemap', 'context', 'snapshot', 'todo/done']) {
+  for (const directory of ['product', 'spec', 'domain', 'codemap', 'context', 'snapshot', 'todo/done', 'ui']) {
     fs.mkdirSync(blueprint(...directory.split('/')), { recursive: true });
   }
 
@@ -87,15 +79,13 @@ function main() {
   if (!fs.existsSync(lock)) {
     write(lock, JSON.stringify({
       version: 4,
-      blueprint_version: manifest.version,
+      blueprint_version: VERSION,
       services: {}, flows: {}, activities: {}, domains: {}, rejected_domains: {},
     }, null, 2) + '\n');
   }
-  for (const [source, target] of [
-    ['context-README.md', blueprint('context', 'README.md')],
-    ['CONVENTIONS.md', blueprint('CONVENTIONS.md')],
-  ]) {
-    if (!fs.existsSync(target)) write(target, render(path.join(ASSETS, source), values));
+  const contextReadme = blueprint('context', 'README.md');
+  if (!fs.existsSync(contextReadme)) {
+    write(contextReadme, render(path.join(ASSETS, 'context-README.md'), values));
   }
 
   const gitignoreFile = path.join(root, '.gitignore');
@@ -106,8 +96,9 @@ function main() {
     write(gitignoreFile, `${gitignore.replace(/\n*$/, '')}\n\n# blueprint\n${missing.join('\n')}\n`);
   }
 
-  console.log(`已在 ${root} 初始化 blueprint v${manifest.version}(${type})`);
-  console.log(`接下来:手写 blueprint/CONVENTIONS.md,拉取 schema,然后调用 pipeline-${project} skill`);
+  console.log(`已在 ${root} 初始化 blueprint v${VERSION}`);
+  console.log(`接下来:拉取 schema,然后调用 pipeline-${project} skill`);
+  console.log(`实现界面时:调用 ui-${project} skill 并提供 flow ID`);
 }
 
 try {

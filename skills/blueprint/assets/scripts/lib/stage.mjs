@@ -1,25 +1,31 @@
 // stage 判定。整个项目在任一时刻只有一个 stage,它回答的问题只有一个:
 // 现在该调哪个 skill。
 //
-// 取件顺序按依赖链正向推进,新锚点排在最后:
+// 取件顺序按依赖链正向推进,新服务排在最后:
 //
-//   orphaned → blocked → flow → activity → domain → code → commit → 新锚点 → ready
+//   orphaned → blocked → flow → activity → domain → code → commit → 新服务 → ready
 //
-// 「新锚点排最后」是并行开发的替代品:人中途往 product 里加了新服务,
+// 「新服务排最后」是并行开发的替代品:人中途在 product/ 下新写了一个服务,
 // 它不会打断当前这一波,而是自动等到整条链清空。
 //
 // 每层内部的对象状态只有四种,skill 靠它决定这一轮做什么:
 //
-//   todo     文档还没产出,或上游变了需要跟进
-//   review   有澄清没答复,或答复了没说落点
-//   approve  文档就绪,等人确认盖章
-//   done     已盖章,跳过
+//   new           文档还没产出,或上游变了需要跟进
+//   wait_review   有澄清没答复,或答复了没说落点
+//   wait_approve  文档就绪,等人确认盖章
+//   complete      已盖章,跳过
 //
 // 「上游变了但本层还没跟进」与「本层已跟进等确认」的区分,靠比对本层文档自身的哈希:
-// 上游哈希对不上而本层文档也变了,说明 skill 已经动过手,进入 approve;
-// 本层文档没变,说明还没开始,是 todo。
+// 上游哈希对不上而本层文档也变了,说明 skill 已经动过手,进入 wait_approve;
+// 本层文档没变,说明还没开始,是 new。
+//
+// **flow 层是例外,它只有 new / updated 两种状态,粒度是业务服务不是流程。**
+// 流程层做过一版逐个流程的四态判定,结果是:同一个服务的几个接口本就要一起想,
+// 而状态机把它们拆成互不相干的四条支线,skill 得在支线之间来回跳。
+// 现在改成:一个服务一轮,从头走一遍(读 product → 定改哪几个流程 → 改 → 澄清 → 确认),
+// 「这个流程到底改没改」由 approve 的准出闸门兜底,不需要在 scan 阶段就分类。
 import { execFileSync } from 'node:child_process';
-import { anchorOf, servicesOfDomain, flowsHash } from './repo.mjs';
+import { servicesOfDomain, flowsHash } from './repo.mjs';
 import { isClean, stateLabel } from './review.mjs';
 import { loadSnapshot, gapsFor } from './db.mjs';
 
@@ -45,89 +51,101 @@ const row = (id, state, detail = '') => ({ id, state, detail });
 /** 引用关系断裂的对象。多半是重命名造成的,一律交人确认,脚本不自动清理。 */
 export function scanOrphans(repo) {
   const out = [];
-  for (const id of [...repo.flows.keys()].sort()) {
-    const flow = repo.flows.get(id);
-    if (!flow.product) { out.push(row(id, 'orphaned', '未声明 product 锚点')); continue; }
-    if (!anchorOf(repo, flow.product)) {
-      out.push(row(id, 'orphaned', `product 锚点 ${flow.product} 不存在`));
-    }
+  // 服务由 product 文档定义。spec 目录还在而文档没了,多半是人改了 product 里的文件名
+  for (const id of [...repo.strayServices].sort()) {
+    const svc = repo.services.get(id);
+    out.push(row(id, 'error', `${svc.productRel} 不存在,但 ${svc.rel}/ 下已有产出`));
   }
   // 活动归属服务,由流程编排。不被任何流程编排的活动是孤儿
+  const stray = new Set(repo.strayServices);
   for (const id of [...repo.activities.keys()].sort()) {
     const act = repo.activities.get(id);
+    if (stray.has(act.service)) continue; // 整个服务已在上面报出,不重复刷屏
     const svc = repo.services.get(act.service);
     if (svc?.flows.length && !svc.activityList.some((i) => i.slug === act.slug)) {
-      out.push(row(id, 'orphaned', `不被 ${act.service} 的任何流程编排`));
+      out.push(row(id, 'error', `不被 ${act.service} 的任何流程编排`));
     }
   }
   for (const id of [...repo.domains.keys()].sort()) {
     if (!repo.domains.get(id).usedBy.length) {
-      out.push(row(id, 'orphaned', '无任何活动 uses 引用'));
+      out.push(row(id, 'error', '无任何活动 uses 引用'));
     }
   }
   for (const id of Object.keys(repo.lock.flows || {})) {
-    if (!repo.flows.has(id)) out.push(row(id, 'orphaned', 'lock 中有记录但文档不存在'));
+    if (!repo.flows.has(id)) out.push(row(id, 'error', 'lock 中有记录但文档不存在'));
   }
   for (const id of Object.keys(repo.lock.activities || {})) {
-    if (!repo.activities.has(id)) out.push(row(id, 'orphaned', 'lock 中有记录但文档不存在'));
+    if (!repo.activities.has(id)) out.push(row(id, 'error', 'lock 中有记录但文档不存在'));
   }
   for (const id of Object.keys(repo.lock.domains || {})) {
-    if (!repo.domains.has(id)) out.push(row(id, 'orphaned', 'lock 中有记录但文档不存在'));
+    if (!repo.domains.has(id)) out.push(row(id, 'error', 'lock 中有记录但文档不存在'));
   }
   return out;
 }
 
 // -------------------------------------------------------------------- flow
 
-/** 未被任何流程认领的 product 锚点:还没开始的业务服务。 */
-export function unclaimedAnchors(repo) {
+/**
+ * 本轮相对上次确认发生了变化的流程。approve 的准出闸门与 changes 清单共用这一份判据。
+ * kind:`新增` 是 lock 里没有的流程,`修改` 是哈希对不上的。
+ */
+export function dirtyFlows(repo, serviceId) {
+  const svc = repo.services.get(serviceId);
+  if (!svc) return [];
   const out = [];
-  for (const product of repo.products.values()) {
-    for (const title of product.anchors.keys()) {
-      const ref = `${product.id}#${title}`;
-      if (!(repo.anchorUsers.get(ref) || []).length) out.push(ref);
-    }
+  for (const fid of svc.flows) {
+    const lock = repo.lock.flows?.[fid]?.flow;
+    if (!lock) { out.push({ id: fid, kind: '新增' }); continue; }
+    if (lock.flow_hash !== repo.flows.get(fid).hash) out.push({ id: fid, kind: '修改' });
   }
   return out;
 }
 
 /**
- * 流程层逐个流程推进:一个流程就是一个对外接口,各自独立确认。
- * 「这个服务还缺哪个接口」脚本判不出来——那是读 product 时的业务判断,
- * 由人在流程层的确认门把关。脚本只保证锚点至少有一个流程(unclaimedAnchors)。
+ * 流程层按业务服务推进,状态只有两种:
+ *
+ *   new       这个服务还没在流程层盖过章
+ *   updated   盖过章,但 product 描述或某个流程文件之后又变了
+ *
+ * 不再有 wait_review / wait_approve:澄清没结清时 `bp flow approve` 会自己拒绝,
+ * 用不着在 scan 里再表达一次;而「哪个流程该改」是每轮重新判断的业务问题,
+ * 记在状态里只会让 skill 以为可以跳过前面的步骤。
  */
 export function scanFlow(repo) {
   const out = [];
-  for (const id of [...repo.flows.keys()].sort()) {
-    const flow = repo.flows.get(id);
+  for (const id of [...repo.services.keys()].sort()) {
+    const svc = repo.services.get(id);
+    if (!svc.product) continue; // stray,orphaned 层处理
 
-    const lock = repo.lock.flows?.[id]?.flow;
-    const anchor = anchorOf(repo, flow.product);
-    if (!anchor) continue; // orphaned,不在本层处理
+    const lock = repo.lock.services?.[id]?.flow;
+    const dirty = dirtyFlows(repo, id);
+    const pending = svc.flows
+      .map((fid) => repo.flows.get(fid))
+      .filter((f) => f.review && !isClean(f.review));
+    const note = pending.length
+      ? `;待澄清 ${pending.map((f) => `${f.slug}(${stateLabel(f.review)})`).join(', ')}`
+      : '';
 
-    const productChanged = !lock || anchor.anchor.hash !== lock.product_hash;
-    const flowChanged = !lock || flow.hash !== lock.flow_hash;
-
-    if (productChanged && !flowChanged) {
-      out.push(row(id, 'todo', lock ? 'product 描述已变更,流程需跟进' : '尚未整理流程'));
+    if (!lock) {
+      const detail = svc.flows.length ? `已有 ${svc.flows.length} 个流程待确认` : '尚未产出流程';
+      // 从没开始过的服务排到下一波,理由见 globalStage
+      out.push({ ...row(id, 'new', detail + note), fresh: !svc.flows.length });
       continue;
     }
-    if (productChanged || flowChanged) {
-      if (!isClean(flow.review)) { out.push(row(id, 'review', stateLabel(flow.review))); continue; }
-      out.push(row(id, 'approve', lock ? '流程已更新,等确认' : '首次确认'));
-      continue;
-    }
-    out.push(row(id, 'done', ''));
-  }
-  // 新写的 product 锚点排在下一波:本波还有待办时不列出,免得人中途记下的新需求
-  // 被卷进当前这一波的澄清——flow skill 拿到的清单永远就是「这一波该做的全部」,
-  // 它不需要知道有别的锚点在排队。本波清空后它们成为仅剩的待办,自然浮上来。
-  // 想看全部锚点的进度用 `bp scan product`。
-  if (out.some((r) => r.state !== 'done')) return out;
-  for (const ref of unclaimedAnchors(repo)) {
-    out.push({ ...row(ref, 'todo', '尚未产出流程'), unclaimed: true });
+    const reasons = [];
+    if (svc.product.hash !== lock.product_hash) reasons.push('product 已变更');
+    if (dirty.length) reasons.push(dirty.map((d) => `${d.kind} ${d.id.split('.').pop()}`).join(', '));
+    // 没答复的澄清也算没走完:approve 会拒绝,不在这里放行,否则问题会被静默遗忘
+    if (!reasons.length && !pending.length) { out.push(row(id, 'complete', '')); continue; }
+    out.push(row(id, 'updated', (reasons.join(';') || '有澄清待结清') + note));
   }
   return out;
+}
+
+/** 流程层是否已对该服务盖章且此后无变动。活动层拿它当准入条件。 */
+export function flowSettled(repo, serviceId) {
+  const hit = scanFlow(repo).find((r) => r.id === serviceId);
+  return !!hit && hit.state === 'complete';
 }
 
 // ---------------------------------------------------------------- activity
@@ -138,17 +156,18 @@ export function scanFlow(repo) {
  */
 export function scanActivity(repo) {
   const out = [];
+  const settled = new Set(scanFlow(repo).filter((r) => r.state === 'complete').map((r) => r.id));
   for (const id of [...repo.services.keys()].sort()) {
     const svc = repo.services.get(id);
     if (!svc.flows.length) continue;
-    // 上一层没过就不进本层:任一流程还没定死时,活动编排都还会变
-    if (svc.flows.some((fid) => !repo.lock.flows?.[fid]?.flow)) continue;
+    // 上一层没过就不进本层:流程还会变时,活动编排也还会变
+    if (!settled.has(id)) continue;
 
     const lock = repo.lock.services?.[id]?.activity;
     const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
     const missingDirs = svc.activityList.map((i) => i.slug).filter((s) => !dirs.has(s));
     if (missingDirs.length) {
-      out.push(row(id, 'todo', `活动文档缺失: ${missingDirs.join(', ')}`));
+      out.push(row(id, 'new', `活动文档缺失: ${missingDirs.join(', ')}`));
       continue;
     }
 
@@ -161,7 +180,7 @@ export function scanActivity(repo) {
     }
 
     if (flowChanged && !changed) {
-      out.push(row(id, 'todo', lock ? '流程已变更,活动需跟进' : '尚未产出活动文档'));
+      out.push(row(id, 'new', lock ? '流程已变更,活动需跟进' : '尚未产出活动文档'));
       continue;
     }
     if (flowChanged || changed) {
@@ -169,13 +188,13 @@ export function scanActivity(repo) {
         .map((aid) => repo.activities.get(aid))
         .filter((a) => a.review && !isClean(a.review));
       if (dirty.length) {
-        out.push(row(id, 'review', dirty.map((a) => `${a.slug}: ${stateLabel(a.review)}`).join('; ')));
+        out.push(row(id, 'wait_review', dirty.map((a) => `${a.slug}: ${stateLabel(a.review)}`).join('; ')));
         continue;
       }
-      out.push(row(id, 'approve', lock ? '活动已更新,等确认' : '首次确认'));
+      out.push(row(id, 'wait_approve', lock ? '活动已更新,等确认' : '首次确认'));
       continue;
     }
-    out.push(row(id, 'done', ''));
+    out.push(row(id, 'complete', ''));
   }
   return out;
 }
@@ -186,18 +205,18 @@ export function scanDomain(repo) {
   const out = [];
   // 被 uses 引用但还没有文档的:activity 层识别出来的待设计能力
   for (const m of repo.missingDomains) {
-    out.push(row(m.id, 'todo', `未设计,引用方 ${m.usedBy.join(', ')}`));
+    out.push(row(m.id, 'new', `未设计,引用方 ${m.usedBy.join(', ')}`));
   }
   for (const id of [...repo.domains.keys()].sort()) {
     const dom = repo.domains.get(id);
-    if (!dom.usedBy.length) continue; // orphaned
+    if (!dom.usedBy.length) continue; // error
     const spec = repo.lock.domains?.[id]?.spec;
     if (!spec || spec.domain_hash !== dom.hash) {
-      if (!isClean(dom.review)) { out.push(row(id, 'review', stateLabel(dom.review))); continue; }
-      out.push(row(id, 'approve', spec ? '契约已更新,等确认' : '首次确认'));
+      if (!isClean(dom.review)) { out.push(row(id, 'wait_review', stateLabel(dom.review))); continue; }
+      out.push(row(id, 'wait_approve', spec ? '契约已更新,等确认' : '首次确认'));
       continue;
     }
-    out.push(row(id, 'done', ''));
+    out.push(row(id, 'complete', ''));
   }
   return out;
 }
@@ -245,12 +264,12 @@ export function scanCode(repo, snap = null) {
       }
     }
     const key = t.isDomain ? 'domain_hash' : 'activity_hash';
-    if (!t.impl) { out.push(row(t.id, 'todo', '尚未实现')); continue; }
+    if (!t.impl) { out.push(row(t.id, 'new', '尚未实现')); continue; }
     if (t.impl[key] !== t.spec[key]) {
-      out.push(row(t.id, 'todo', t.isDomain ? '契约已更新' : '活动文档已更新'));
+      out.push(row(t.id, 'new', t.isDomain ? '契约已更新' : '活动文档已更新'));
       continue;
     }
-    out.push(row(t.id, 'done', ''));
+    out.push(row(t.id, 'complete', ''));
   }
   // 领域能力先于引用它的活动,同服务内被依赖的活动先于依赖方
   const order = new Map(sortImplQueue(repo, out.map((r) => r.id)).map((id, i) => [id, i]));
@@ -310,8 +329,8 @@ export function hasPendingCommit(root, lock) {
 // -------------------------------------------------------------------- 全局
 
 /**
- * 全项目当前的 stage。每层取「非 done」的行,首个非空的层即当前 stage。
- * 新锚点(unclaimed)从 flow 层里摘出来单独排到最后,保证不打断当前这一波。
+ * 全项目当前的 stage。每层取「非 complete」的行,首个非空的层即当前 stage。
+ * 全新的业务服务(fresh)从 flow 层里摘出来单独排到最后,保证不打断当前这一波。
  */
 export function globalStage(repo) {
   const snap = loadSnapshot(repo.root);
@@ -323,25 +342,28 @@ export function globalStage(repo) {
   const blocked = code.filter((r) => r.state === 'blocked');
   if (blocked.length) return { stage: 'blocked', rows: blocked };
 
+  // 人中途新写的 product 文档排在下一波:本波还有待办时不列出,免得人记下的新需求
+  // 被卷进当前这一波的澄清——flow skill 拿到的清单永远就是「这一波该做的全部」。
+  // 想看全部服务的进度用 `bp scan product`。
   const flowAll = scanFlow(repo);
-  const flow = flowAll.filter((r) => r.state !== 'done' && !r.unclaimed);
+  const flow = flowAll.filter((r) => r.state !== 'complete' && !r.fresh);
   if (flow.length) return { stage: 'flow', rows: flow };
 
-  const activity = scanActivity(repo).filter((r) => r.state !== 'done');
+  const activity = scanActivity(repo).filter((r) => r.state !== 'complete');
   if (activity.length) return { stage: 'activity', rows: activity };
 
-  const domain = scanDomain(repo).filter((r) => r.state !== 'done');
+  const domain = scanDomain(repo).filter((r) => r.state !== 'complete');
   if (domain.length) return { stage: 'domain', rows: domain };
 
   // waiting 排除在外:它等的是 domain 层,而 domain 层此刻已经清空,
   // 剩下的 waiting 只可能是 uses 指向了一个谁也没登记的 id,交由 validate 报错
-  const codeTodo = code.filter((r) => r.state !== 'done' && r.state !== 'waiting');
-  if (codeTodo.length) return { stage: 'code', rows: codeTodo };
+  const codeOpen = code.filter((r) => r.state !== 'complete' && r.state !== 'waiting');
+  if (codeOpen.length) return { stage: 'code', rows: codeOpen };
 
   if (hasPendingCommit(repo.root, repo.lock)) return { stage: 'commit', rows: [] };
 
-  const unclaimed = flowAll.filter((r) => r.unclaimed);
-  if (unclaimed.length) return { stage: 'flow', rows: unclaimed };
+  const fresh = flowAll.filter((r) => r.fresh);
+  if (fresh.length) return { stage: 'flow', rows: fresh };
 
   return { stage: 'ready', rows: [] };
 }
@@ -353,15 +375,4 @@ export function scanLayer(repo, layer) {
   if (layer === 'domain') return scanDomain(repo);
   if (layer === 'code') return scanCode(repo);
   throw new Error(`未知的层: ${layer}(可选 ${LAYERS.join(' / ')})`);
-}
-
-/** 单个对象在其所属层的状态,供 bp status 用。 */
-export function objectState(repo, id) {
-  for (const layer of LAYERS) {
-    const hit = scanLayer(repo, layer).find((r) => r.id === id);
-    if (hit) return { layer, ...hit };
-  }
-  const orphan = scanOrphans(repo).find((r) => r.id === id);
-  if (orphan) return { layer: null, ...orphan };
-  return null;
 }

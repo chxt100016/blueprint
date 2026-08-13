@@ -1,5 +1,0 @@
-{
-  "blueprint_assets": true,
-  "version": "1.0.0",
-  "note": "blueprint skill 包的母版资产标记，bootstrap.mjs 据此确认母版资产。项目内拷贝不含此文件。"
-}

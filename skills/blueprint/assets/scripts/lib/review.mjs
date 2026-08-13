@@ -1,19 +1,28 @@
 // 澄清记录(.review.md)的解析与读写。
 //
 // 这个文件由 bp review 命令独占读写,skill 不解析它、不拼它的格式、不分配编号。
-// 一条澄清的生命周期只有三步,每步对应一条命令:
+// 一条澄清的生命周期有四步,前三步各对应一条命令,末步由 approve 触发:
 //
 //   ask      AI 想到一个拿不准的点     → 分配编号,进「待答复」
 //   answer   人给了答复                → 带答复迁入「已答复」
 //   resolve  AI 把答复落进文档         → 补一条落点
+//   settle   人在确认门盖章            → 整批迁入「已确认」,永久留在文件里
 //
 // 「待答复」非空 = 还有事没问清;「已答复」里有条目没落点 = AI 说处理了但没说落在哪。
 // 两者任一非空都不许 approve——后者是 AI 声称改了却没改的唯一捕获时机。
+//
+// 「已确认」区不参与上面任何判定,它是盖过章的抉择存档,给人回溯用:
+// 这个服务当初为什么拆成两个流程、某个边界值为什么取这个数,答案只存在这里。
+// approve 时删掉整份记录会让这些一次性蒸发,所以迁而不删。
+// 区隔靠二级标题,因此 isClean 之类的判定不必知道存档的存在,照旧只看前两区。
 import { splitSections } from './parse.mjs';
 
 export const AREA_PENDING = '待答复';
 export const AREA_ANSWERED = '已答复';
-export const AREAS = [AREA_PENDING, AREA_ANSWERED];
+export const AREA_SETTLED = '已确认';
+// parseReview / render / maxNumber 遍历本表。已确认区列进来,编号才会跨轮唯一——
+// 上一轮盖章到 Q5,新一轮就从 Q6 起,不会撞上存档里的旧编号。
+export const AREAS = [AREA_PENDING, AREA_ANSWERED, AREA_SETTLED];
 
 export const HEADER_NOTE = '<!-- 本文件由 bp review 命令维护,请勿手工编辑 -->';
 
@@ -91,7 +100,8 @@ export function render(review) {
 }
 
 export function emptyReview(id) {
-  return `# ${id} 澄清记录\n\n${HEADER_NOTE}\n\n## ${AREA_PENDING}\n\n## ${AREA_ANSWERED}\n`;
+  const areas = AREAS.map((name) => `## ${name}\n`).join('\n');
+  return `# ${id} 澄清记录\n\n${HEADER_NOTE}\n\n${areas}`;
 }
 
 // ------------------------------------------------------------------- 状态
@@ -102,6 +112,11 @@ export function pendingItems(review) {
 
 export function answeredItems(review) {
   return review ? review.areas[AREA_ANSWERED] : [];
+}
+
+/** 盖过章的存档。不参与任何判定,只有回溯抉择时才读。 */
+export function settledItems(review) {
+  return review ? review.areas[AREA_SETTLED] : [];
 }
 
 /** 已答复但还没写落点的条目:AI 说处理了,但没说落在文档哪里。 */
@@ -189,4 +204,19 @@ export function resolveQuestion(review, number, note) {
   hit.item.note = hit.item.note ? `${hit.item.note} / ${clean}` : clean;
   hit.item.hasNote = true;
   return hit.item;
+}
+
+/**
+ * 盖章:把「已答复」整批迁入「已确认」,返回迁移条数。
+ *
+ * 只由各层 approve 调用,没有对应的 bp 子命令——盖章的时机由 lock 决定,
+ * 不该由 skill 自己挑。迁移前每条都已有落点,这由 approve 里的
+ * requireCleanReviews 保证,本函数不重复检查。
+ */
+export function settleAll(review) {
+  const done = review.areas[AREA_ANSWERED];
+  if (!done.length) return 0;
+  review.areas[AREA_SETTLED].push(...done);
+  review.areas[AREA_ANSWERED] = [];
+  return done.length;
 }

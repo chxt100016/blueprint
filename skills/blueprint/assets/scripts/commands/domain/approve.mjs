@@ -1,12 +1,9 @@
-import fs from 'node:fs';
-
-import { exists } from '../../lib/parse.mjs';
 import { loadLock, saveLock, servicesOfDomain } from '../../lib/repo.mjs';
 import { contractFields, validateDomain } from '../../lib/schema.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx, nowIso } from '../../runtime/context.mjs';
 import { domainOrDie } from '../../runtime/entities.mjs';
-import { requireCleanReviews } from '../../runtime/reviews.mjs';
+import { requireCleanReviews, settleReviews } from '../../runtime/reviews.mjs';
 import { printErrors } from '../../runtime/validation.mjs';
 
 export function run(cli, [id]) {
@@ -14,7 +11,10 @@ export function run(cli, [id]) {
   if (!id) fail('用法: bp domain approve <@id>');
   const domain = domainOrDie(repo, id);
 
-  if (domain.review) requireCleanReviews([{ label: id, review: domain.review }]);
+  const reviews = domain.review
+    ? [{ label: id, path: domain.reviewPath, review: domain.review }]
+    : [];
+  requireCleanReviews(reviews);
 
   const errors = validateDomain(repo, id);
   if (errors.length) { printErrors(errors); process.exit(1); }
@@ -31,6 +31,7 @@ export function run(cli, [id]) {
     },
   };
   saveLock(repo.root, lockData);
-  if (exists(domain.reviewPath)) fs.rmSync(domain.reviewPath);
+  const settled = settleReviews(reviews);
   out(`已确认领域能力 ${id} 的契约`);
+  if (settled) out(`${settled} 条澄清已存档到 ${domain.reviewRel} 的「已确认」`);
 }

@@ -15,6 +15,7 @@ import { run as domainReject } from './domain/reject.mjs';
 import { run as flowApprove } from './flow/approve.mjs';
 import { run as flowChanges } from './flow/changes.mjs';
 import { run as help } from './help.mjs';
+import { run as newDoc } from './new.mjs';
 import { run as read } from './read.mjs';
 import { run as reviewAnswer } from './review/answer.mjs';
 import { run as reviewAsk } from './review/ask.mjs';
@@ -25,7 +26,6 @@ import { run as schemaCheck } from './schema/check.mjs';
 import { run as schemaPull } from './schema/pull.mjs';
 import { run as scope } from './scope.mjs';
 import { run as stage } from './stage.mjs';
-import { run as status } from './status.mjs';
 import { run as validate } from './validate.mjs';
 import { run as verify } from './verify.mjs';
 import { run as which } from './which.mjs';
@@ -33,7 +33,7 @@ import { run as which } from './which.mjs';
 const COMMANDS = new Map([
   ['stage', stage],
   ['scan', scan],
-  ['status', status],
+  ['new', newDoc],
   ['scope', scope],
   ['read', read],
   ['validate', validate],
@@ -65,7 +65,7 @@ const COMMANDS = new Map([
 
 const GROUP_USAGE = new Map([
   ['review', '用法: bp review ask|answer|resolve|list <id>'],
-  ['flow', '用法: bp flow changes|approve <flow>'],
+  ['flow', '用法: bp flow changes|approve <service>|<flow>'],
   ['activity', '用法: bp activity changes|approve <service>'],
   ['domain', '用法: bp domain list|changes|approve|reject'],
   ['code', '用法: bp code check|done|adopt <id>'],
@@ -78,7 +78,7 @@ const GROUP_USAGE = new Map([
 export function dispatch(cli) {
   const [command, subcommand] = cli.args;
   if (command === undefined || command === '--help' || command === '-h') return help(cli, []);
-  if (command === 'init') return fail('init 属于母版，请运行 blueprint skill 包内的 assets/bootstrap.mjs');
+  if (command === 'init') return fail('init 属于母版，请运行 blueprint skill 包内的 bootstrap.mjs');
 
   const nested = subcommand ? `${command} ${subcommand}` : null;
   if (nested && COMMANDS.has(nested)) return COMMANDS.get(nested)(cli, cli.args.slice(2));

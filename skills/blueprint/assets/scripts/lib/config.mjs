@@ -1,13 +1,16 @@
 // config.yaml 的读取、环境变量插值与作用域推导。
 //
 // 两个「能力」分属不同层,词不通用:
-//   商业能力 capability  product/<capability>.md,是业务服务的归属域
+//   商业能力 capability  product/<capability>/,是业务服务的归属目录
 //   领域能力 domain      domain/<domain>/<name>/domain.md,跨服务复用的横切层
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseYaml, readFileSafe, parseTemplateSpec } from './parse.mjs';
 
 export const BP_DIR = 'blueprint';
+
+/** 目录名与文件名的合法形式。id 由路径拼出,所以两者同一套规则。 */
+export const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 // id 第三段的层级标记。加它是为了让 id 自解释:业务流程与业务活动都挂在服务下,
 // 若共用一个三段命名空间,解析 id 就得先查 repo 才知道是哪一层,
@@ -36,9 +39,7 @@ export function loadConfig(root) {
     throw new Error(`找不到 ${path.relative(process.cwd(), file)},先用 blueprint skill 初始化`);
   }
   const cfg = parseYaml(raw) || {};
-  cfg.type = cfg.type || 'backend';
   cfg.layout = cfg.layout || {};
-  cfg.overrides = cfg.overrides || {};
   cfg.verify = cfg.verify || {};
   cfg.always_readable = cfg.always_readable || [];
   cfg.templates = loadTemplateSpec(root);
@@ -77,12 +78,6 @@ export function interpolate(str) {
   });
 }
 
-/** 该 config.type 下需要产出的作用域。 */
-export function scopesOfType(cfg) {
-  if (cfg.type === 'backend') return ['backend'];
-  return ['backend', 'frontend'];
-}
-
 function fill(tpl, vars) {
   return String(tpl).replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
 }
@@ -100,12 +95,9 @@ export function resolveScope(cfg, id) {
     return { domain: ensureSlash(fill(tpl, { name })) };
   }
   const [capability, service] = String(id).split('.');
-  const override = cfg.overrides?.[capability] || {};
   const out = {};
-  for (const key of scopesOfType(cfg)) {
-    const tpl = override[key] || cfg.layout[key];
-    if (tpl) out[key] = ensureSlash(fill(tpl, { capability, service: service || '' }));
-  }
+  const tpl = cfg.layout.app;
+  if (tpl) out.app = ensureSlash(fill(tpl, { capability, service: service || '' }));
   return out;
 }
 
@@ -149,6 +141,41 @@ export function idToSpecPath(id) {
   if (!capability) return null;
   if (mark === FLOW_MARK) return path.join('spec', capability, service, `${name}.md`);
   return path.join('spec', capability, service, name, 'activity.md');
+}
+
+/**
+ * 由 id 推导它该落在哪份文档(相对 blueprint/),`bp new` 与各处路径计算的唯一出处。
+ * 返回 { kind, file, template },id 不合法返回 null。
+ *
+ * 业务服务的 id 就是 `product/<capability>/<service>.md` 的路径,反过来也成立——
+ * 人写文件即建服务,不需要再声明什么。
+ */
+export function idToDoc(id) {
+  const kind = idKind(id);
+  if (kind === 'domain') {
+    const [group, name] = splitDomainId(id);
+    if (!group) return null;
+    return { kind, file: path.join('domain', group, name, 'domain.md'), template: 'domain.md' };
+  }
+  if (kind === 'service') {
+    const [capability, service] = String(id).split('.');
+    if (!SLUG.test(capability) || !SLUG.test(service)) return null;
+    return { kind, file: path.join('spec', capability, service, 'service.md'), template: 'service.md' };
+  }
+  if (kind === 'flow' || kind === 'activity') {
+    const parts = splitUnitId(id);
+    if (parts.length !== 4) return null;
+    if (![parts[0], parts[1], parts[3]].every((p) => SLUG.test(p))) return null;
+    return { kind, file: idToSpecPath(id), template: `${kind}.md` };
+  }
+  return null;
+}
+
+/** 业务服务 id → 人写的业务描述文档路径(相对 blueprint/)。 */
+export function idToProductPath(serviceId) {
+  const [capability, service] = String(serviceId).split('.');
+  if (!capability || !service) return null;
+  return path.join('product', capability, `${service}.md`);
 }
 
 /** 活动/流程 id 的所属服务 id。 */

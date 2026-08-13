@@ -22,7 +22,7 @@ export function run(cli) {
   const block = (label, list) => {
     list.forEach((item, index) => tail.push(`${pad(index === 0 ? label : '', 10)}${pad(item.id, 34)}${item.kind}`));
   };
-  block('商业能力', context.products);
+  block('业务描述', context.products);
   block('业务服务', context.services);
   block('业务流程', context.flows);
   block('业务活动', context.activities);

@@ -24,7 +24,7 @@ description: 要把 <<PROJECT>> 本轮 blueprint 产出（spec / domain / codema
 
 - **只调用 BP 提供的命令，不要自己写脚本，不要直接读写 `blueprint/lock.json`。**
   下文 `BP` 代指 `node blueprint/scripts/bp.mjs`，在项目根目录执行。
-- **提交信息以脚本产出为准，不要自己发散。** type 与 scope 由脚本推导（有新增走 `feat`，
+- **提交信息以脚本产出为准，不要自己发散。** 提交类别与 scope 由脚本推导（有新增走 `feat`，
   纯修改走 `fix`），不要自己写 `feat(order):` 这类前缀，尾部的 `--- blueprint ---`
   结构化块也不得改动——你只写正文摘要。
 - **不要用 `git add -A`。** 按 context 的 `files` 清单精确 `git add`——
@@ -42,11 +42,17 @@ flowchart TD
     B -->|有| D[② 写一段人话正文]
     D --> E[③ BP commit message]
     E --> F[④ 展示提交信息与文件清单]
-    F -->|人选「我要改」| D
-    F -->|人选「提交」| G[⑤ 按 files 清单精确 git add]
+    F --> P1[/人 提交 or 我要改/]
+    P1 -->|我要改| D
+    P1 -->|提交| G[⑤ 按 files 清单精确 git add]
     G --> H[⑥ git commit -F -]
-    H --> I([done])
+    H --> I([complete])
+
+    classDef human fill:#fff3cd,stroke:#d39e00,stroke-width:2px
+    class P1 human
 ```
+
+黄色节点是**人的介入点，你必须停在那里等**——没有人明确说「提交」就不许 commit。
 
 ## 进入校验
 

@@ -17,17 +17,17 @@ metadata:
 日常推进用生成出来的 `pipeline-<project>` skill。
 
 `init` 是幂等的：生成物无条件覆盖，定制物已存在则原样保留。母版迭代期直接重跑 init
-就能把新的 `scripts/` `templates/` 与六个 skill 刷进项目，因此不另设 upgrade 命令。
+就能把新的 `scripts/` `templates/` 与七个 skill 刷进项目，因此不另设 upgrade 命令。
 
 ## 定位母版
 
-以下用 `SKILL_DIR` 代指本 SKILL.md **实际所在目录**，`BOOTSTRAP` 代指 `$SKILL_DIR/assets/bootstrap.mjs`。
-`BOOTSTRAP` 是独立的单文件安装器，只读取同级母版资产，不复用也不进入项目内的 `blueprint/scripts/`。
+以下用 `SKILL_DIR` 代指本 SKILL.md **实际所在目录**，`BOOTSTRAP` 代指 `$SKILL_DIR/bootstrap.mjs`。
+`BOOTSTRAP` 是独立的单文件安装器，只读取旁边 `assets/` 中的母版资产，不复用也不进入项目内的 `blueprint/scripts/`。
 
 具体路径取决于装法：手动拷贝就是 `.claude/skills/blueprint/` 或 `~/.claude/skills/blueprint/`；
 用 `npx skills add` 装的话，母本通常在 `~/.agents/skills/blueprint/`，
 再由 `~/.claude/skills/blueprint` 软链暴露——两条路径都能直接 `node` 运行，
-Node 会把软链解析成真实路径，`assets/` 就在旁边。不确定时先 `ls $SKILL_DIR/assets/bootstrap.mjs` 确认。
+Node 会把软链解析成真实路径。不确定时先 `ls $SKILL_DIR/bootstrap.mjs` 确认。
 
 初始化或刷新必须用 `BOOTSTRAP` 运行；`BP` 只指项目内的 `node blueprint/scripts/bp.mjs`，
 不再承担母版安装职责。
@@ -42,10 +42,9 @@ Node 会把软链解析成真实路径，`assets/` 就在旁边。不确定时�
 
 | 项 | 说明 | 建议值 |
 |---|---|---|
-| 项目名 | 会变成六个 skill 的后缀，如 `pipeline-shop` | 取仓库目录名 |
-| 项目类型 | `backend` / `fullstack`，决定 activity 是否含「交互」章节与 verify 范围 | 有前端目录用 `fullstack`，否则用 `backend` |
-| 代码布局 | `layout.backend` / `layout.frontend` / `layout.domain` 的模板串 | 先扫一眼现有目录结构再建议 |
-| 编译命令 | `verify.backend` / `verify.frontend` | 从 package.json 的 scripts 里找 |
+| 项目名 | 会变成七个 skill 的后缀，如 `pipeline-shop`、`ui-shop` | 取仓库目录名 |
+| 代码布局 | `layout.app` / `layout.domain` 的模板串 | 先扫一眼现有目录结构再建议 |
+| 编译命令 | `verify.app` | 从 package.json 的 scripts 里找 |
 
 布局模板串支持两组占位符：`{capability}`、`{service}`（业务活动）与 `{name}`（领域能力）。
 
@@ -54,51 +53,49 @@ src/modules/{capability}/  →  order.create.apply-coupon  得到  src/modules/o
 src/domain/{name}/         →  @pricing.discount          得到  src/domain/discount/
 ```
 
-注意两个「能力」分属不同层，词不通用：`{capability}` 是**商业能力**（`product/<capability>.md`），
+注意两个「能力」分属不同层，词不通用：`{capability}` 是**商业能力**（`product/<capability>/` 目录），
 `{name}` 是**领域能力**的能力名（`domain/<domain>/<name>/`）。
-
-**`config.type` 中途变更没有迁移路径**（改了之后全部已 approve 的活动文档都要重新确认），
-所以这一项要问清楚再定。
 
 ### 2. 执行
 
 ```
-node $SKILL_DIR/assets/bootstrap.mjs \
+node $SKILL_DIR/bootstrap.mjs \
   --root <项目根> \
   --project <项目名> \
-  --type <backend|fullstack> \
-  --layout-backend "src/modules/{capability}/" \
-  --layout-frontend "src/pages/{capability}/" \
+  --layout-app "src/modules/{capability}/" \
   --layout-domain "src/domain/{name}/" \
-  --verify-backend "npx tsc --noEmit -p tsconfig.server.json" \
-  --verify-frontend "npx tsc --noEmit -p tsconfig.web.json"
+  --verify-app "npx tsc --noEmit -p tsconfig.server.json"
 ```
 
-脚本会：拷贝 `scripts/` 与对应类型的 `templates/`；生成 `config.yaml`、`WORKFLOW.md`、
-`context/README.md`、`CONVENTIONS.md` 骨架、空 `lock.json`；生成六个 `*-<project>` skill
-（pipeline / flow / activity / domain / code / commit）；
+脚本会：拷贝 `scripts/` 与 `templates/`；生成 `config.yaml`、
+`context/README.md`、空 `lock.json`；生成七个 `*-<project>` skill
+（pipeline / flow / activity / domain / code / commit / ui）；
+创建空的 `blueprint/ui/`，由 ui skill 首次使用时与人讨论后建立项目级 UI 上下文；
 追加 `.gitignore`（排除 `blueprint/context/db.yaml`，该文件允许写明文凭据）。
 **拷贝一律用文件复制，不用模型生成。**
 
 ### 3. 收尾提示
 
-告诉用户还需要手动做四件事：
+告诉用户还需要手动做三件事：
 
-1. 手写 `blueprint/CONVENTIONS.md`——code skill 每次都会读它，写得越具体代码越贴合
-2. 写 `blueprint/context/db.yaml`（不入库）
-3. 首次运行 `node blueprint/scripts/bp.mjs schema pull`
-4. 按本项目实际结构填 `config.always_readable`（共享工具、类型定义那类目录），
+1. 写 `blueprint/context/db.yaml`（不入库）
+2. 首次运行 `node blueprint/scripts/bp.mjs schema pull`
+3. 按本项目实际结构填 `config.always_readable`（共享工具、类型定义那类目录），
    init 不猜这一项，留空则每次 `bp scope` 只给活动自己的目录
 
-然后在 `blueprint/product/` 下写第一个商业能力文件，调用 `pipeline-<project>` 开始。
+然后写第一个业务服务：`blueprint/product/<商业能力>/<业务服务>.md`，一份文件就是一个业务服务，
+目录名与文件名都用英文 kebab-case（路径即 id，`product/order/checkout.md` 就是 `order.checkout`），
+内容参考 `blueprint/templates/product.md`。写完调用 `pipeline-<project>` 开始。
+需要实现界面时，调用 `ui-<project>` 并给出一个已确认的 flow ID。
 
 ### 存量项目接入
 
 已有代码的项目不要试图一次性把全仓纳入。按这个顺序：
 
 1. `init` → `schema pull`
-2. 挑 1~2 个近期在改的业务服务，人写 product 锚点（一个标题写一次完整的对外交付）
-3. flow skill 按对外接口划分流程、生成活动编排 → 逐个 `bp flow approve <flow>`
+2. 挑 1~2 个近期在改的业务服务，人各写一份 `product/<capability>/<service>.md`
+   （一份文件写一次完整的对外交付）
+3. flow skill 按对外接口划分流程、生成活动编排 → `bp flow approve <flow>...`
 4. activity skill 生成活动文档 → `bp activity approve <service>`（一次覆盖该服务全部活动）
 5. domain skill 补齐被 `uses` 引用的领域能力 → `bp domain approve <@id>`
 6. 人手写这些活动的 codemap
@@ -107,6 +104,18 @@ node $SKILL_DIR/assets/bootstrap.mjs \
 
 未纳入的代码不会出现在 `bp stage` 与 `bp scan` 的输出中。
 
+### 业务对象与路径
+
+| 层 | 路径 | id |
+|---|---|---|
+| 业务服务 | `product/<cap>/<svc>.md`（人写）+ `spec/<cap>/<svc>/`（产出） | `<cap>.<svc>` |
+| 业务流程 | `spec/<cap>/<svc>/<flow>.md` | `<cap>.<svc>.flow.<flow>` |
+| 业务活动 | `spec/<cap>/<svc>/<act>/activity.md` | `<cap>.<svc>.activity.<act>` |
+| 领域能力 | `domain/<领域>/<name>/domain.md` | `@<领域>.<name>` |
+
+**路径即 id，双向可推。** 文档因此不声明自己属于谁，front-matter 的 `id` 只是与路径比对的冗余；
+建文档一律用 `bp new <id>`，路径由脚本算。改名等于删除重建，会走 `orphaned` 交人确认。
+
 ---
 
 ## 刷新生成物
@@ -114,11 +123,12 @@ node $SKILL_DIR/assets/bootstrap.mjs \
 母版改了、想把新版刷进已有项目时，用原来那条 init 命令重跑即可：
 
 ```
-node $SKILL_DIR/assets/bootstrap.mjs --root <项目根> --project <项目名> --type <类型>
+node $SKILL_DIR/bootstrap.mjs --root <项目根> --project <项目名>
 ```
 
 生成物覆盖，定制物保留。**`config.yaml` 已存在就完全不动**——母版新增了配置字段的话，
-按母版 `assets/config/<type>.yaml` 手动补进去。
+按母版 `assets/config.yaml` 手动补进去。
+刷新时会清理旧版生成的 `blueprint/WORKFLOW.md`。
 
 **改了模板或章节结构的话**，已 approve 的文档会因为哈希取材变化而全部进入偏离态，
 需要人工把文档改成新结构再重走 approve。当前没有迁移工具，这是刻意留白：
@@ -131,10 +141,11 @@ node $SKILL_DIR/assets/bootstrap.mjs --root <项目根> --project <项目名> --
 | 路径 | 归属 | 重跑 init |
 |---|---|---|
 | `.claude/skills/*-<project>/SKILL.md` | 生成物 | 覆盖 |
-| `blueprint/scripts/` `WORKFLOW.md` | 生成物 | 覆盖 |
+| `blueprint/scripts/` | 生成物 | 覆盖 |
 | `blueprint/templates/` | 生成物,但**是校验真相源** | 覆盖(定制会丢) |
 | `blueprint/config.yaml` | 定制物(init 时生成一次) | 不动 |
-| `blueprint/CONVENTIONS.md` `product/` `context/` | 定制物 | 不动 |
+| `blueprint/ui/` | UI skill 维护的项目上下文 | 不动 |
+| `blueprint/product/` `context/` | 定制物(人写的业务描述) | 不动 |
 | `blueprint/spec/` `domain/` `codemap/` `lock.json` | 定制物 | 不动 |
 
 ### 关于 templates
@@ -149,7 +160,12 @@ node $SKILL_DIR/assets/bootstrap.mjs --root <项目根> --project <项目名> --
 | `<!-- bp: no-hash -->` | 该章节不参与文档哈希(「实现提示」用它) |
 | `<!-- bp: numbered=A -->` | 该章节需形如 `A1 A2` 的连续编号 |
 
-front-matter 的键即允许出现的字段；`entry` 的子键即该 type 下必填的入口。
+front-matter 的键即允许出现的字段；`entry` 的子键即流程必填的入口。
+
+三份模板（flow / activity / domain）的第一节统一是 `## 概要`：单行、不超过 40 字，脚本硬校验。
+它是各层清单唯一直接列出的正文——`bp scan flow`、`bp scan activity`、`bp domain list` 都靠它，
+人和 AI 由此在不打开文件的情况下认出一个对象。**这一节不要移位，也不要改名**，
+改了各层清单就只剩一列 id。
 
 **两个后果要注意：**
 
@@ -157,3 +173,38 @@ front-matter 的键即允许出现的字段；`entry` 的子键即该 type 下�
    所有对象进入偏离态，需要重走 approve。要改就在项目早期改。
 2. **重跑 init 会整目录覆盖 templates，项目内的定制会丢**。当前没有为模板定制提供保护，
    要长期定制就改母版 `assets/templates/`，不要只改项目内的副本。
+
+---
+
+## 母版约定
+
+改 `assets/` 时按这两条走，它们只约束母版自身，不影响生成出来的项目。
+
+### 格式进模板，判据进 skill
+
+| 内容 | 归属 |
+|---|---|
+| 某一节写什么、用不用表格、front-matter 字段白名单 | `assets/templates/` |
+| 什么时候该拆、复用还是新建、参考区间、代价最高的错误是什么 | `assets/skills/` |
+
+界线是**这条知识产出后还需不需要**：字段级要求填完就没用了，模板注释随产出一起消化掉正合适；
+判断规则下一轮改动时还要重读，写进模板会随注释一起蒸发。
+
+两处都写必然漂移，所以同一条要求只留一处。skill 里提到模板已有的要求时，
+写「以模板为准」而不是复述一遍。
+
+### mermaid：黄色 = 人
+
+七个 skill 的流程图里，凡是**要停下等人**或**交人处理**的节点，一律：
+
+```
+    P1[/人 答复澄清/]
+    classDef human fill:#fff3cd,stroke:#d39e00,stroke-width:2px
+    class P1,P2 human
+```
+
+平行四边形取「输入」的传统含义，人的答复正是输入。图后跟一句「黄色节点是人的介入点，
+你必须停在那里等」。
+
+**不要只把人写在边的标签上**（`E -->|人选通过| F`）。人在这些位置是阻塞点，
+写成边标签时它在图上不占位置，AI 顺着节点往下读就滑过去了——节点占位置，才拦得住。

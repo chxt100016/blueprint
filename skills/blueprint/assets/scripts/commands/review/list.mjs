@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { readFileSafe } from '../../lib/parse.mjs';
 import * as review from '../../lib/review.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
@@ -39,4 +41,8 @@ export function run(cli, [id]) {
     out('');
   }
   out(review.isClean(parsed) ? '澄清已结清,可以 approve' : `未结清:${review.stateLabel(parsed)}`);
+  // 已确认区不展开:它是往轮次的存档,列出来会把当前待办淹掉。给个条数和路径就够,
+  // 要回溯的人自己去翻文件。
+  const settled = review.settledItems(parsed).length;
+  if (settled) out(`往轮已确认 ${settled} 条,见 ${path.relative(repo.root, file)}`);
 }

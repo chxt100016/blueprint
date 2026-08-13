@@ -25,7 +25,7 @@ export function verifyScopesForId(cfg, id, files) {
   const hit = new Set();
   for (const file of files || []) {
     for (const [key, dir] of Object.entries(scope)) {
-      if (String(file).startsWith(dir)) hit.add(key === 'domain' ? 'backend' : key);
+      if (String(file).startsWith(dir)) hit.add(key === 'domain' ? 'app' : key);
     }
   }
   if (!hit.size) for (const key of Object.keys(cfg.verify)) hit.add(key);

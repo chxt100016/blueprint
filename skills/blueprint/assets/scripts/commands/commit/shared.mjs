@@ -34,8 +34,9 @@ export function buildCommitContext(repo) {
   for (const { status, file } of changed) {
     const kind = isNew(status) ? '新增' : '修改';
     let match;
-    if ((match = file.match(/^blueprint\/product\/([^/]+)\.md$/))) {
-      products.push({ id: match[1], kind });
+    if ((match = file.match(/^blueprint\/product\/([^/]+)\/([^/]+)\.md$/))) {
+      // 人写的业务描述:一份文件一个业务服务,路径即 id
+      products.push({ id: `${match[1]}.${match[2]}`, kind });
     } else if ((match = file.match(/^blueprint\/spec\/([^/]+)\/([^/]+)\/service\.md$/))) {
       services.push({ id: `${match[1]}.${match[2]}`, kind });
     } else if ((match = file.match(/^blueprint\/spec\/([^/]+)\/([^/]+)\/([^/]+)\/activity\.md$/))) {
@@ -75,7 +76,7 @@ export function buildCommitContext(repo) {
   }
 
   const capabilities = [...new Set([
-    ...products.map((product) => product.id),
+    ...products.map((product) => product.id.split('.')[0]),
     ...services.map((service) => service.id.split('.')[0]),
     ...flows.map((flow) => flow.id.split('.')[0]),
     ...activities.map((activity) => activity.id.split('.')[0]),

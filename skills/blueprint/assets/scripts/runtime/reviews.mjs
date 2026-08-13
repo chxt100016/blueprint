@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import * as review from '../lib/review.mjs';
-import { readFileSafe } from '../lib/parse.mjs';
+import { exists, readFileSafe } from '../lib/parse.mjs';
 import { errOut, fail, out } from './cli.mjs';
 import { clip, table } from './format.mjs';
 
@@ -36,6 +36,26 @@ export function requireCleanReviews(targets) {
     errOut('待答复的用 bp review answer 记录人的答复,已答复未落实的用 bp review resolve 写落点。');
     process.exit(1);
   }
+}
+
+/**
+ * 盖章后把各目标的澄清迁入「已确认」区,返回迁移条数。
+ *
+ * 三层 approve 共用。原先这里是 rmSync,整份记录连同抉择一起没了;
+ * 现在改成迁区,文件留着但对判定透明——review 文件不参与哈希,
+ * 写它不会让本层文档的 hash 变化,不存在「盖章反而退回 new」的回环。
+ */
+export function settleReviews(targets) {
+  let total = 0;
+  for (const target of targets) {
+    if (!target.path || !exists(target.path)) continue;
+    const parsed = review.parseReview(readFileSafe(target.path));
+    const moved = review.settleAll(parsed);
+    if (!moved) continue;
+    saveReviewFile(target.path, parsed);
+    total += moved;
+  }
+  return total;
 }
 
 export function printResolved(targets) {

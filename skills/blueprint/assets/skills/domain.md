@@ -30,6 +30,8 @@ description: 要为 <<PROJECT>> 的 activity.md 里被 uses 引用的领域能�
   澄清记录只能通过 `BP review ask|answer|resolve` 变更。
 - **多于一个能力时先建任务清单，一个个推进，不要并行。**
   每个能力的澄清都要人当场回答，混在一起人会分不清在答哪个。
+- **不要自己新建文件，用 `BP new "@<领域>.<能力名>"`。** id 即路径，脚本按 id 算出该落在哪、
+  并把 front-matter 的 id 填好；自己拼错的后果是下一次 scan 判 error 或 validate 报错。
 - **契约只增不改。** 已确认能力的既有字段不得删除或改名——这条硬约束是引用方永远不需要
   被通知的原因。破坏性变更走「新建 `@x.y-v2` + 原能力删除流程」，由人决定。
 - **领域能力之间不允许互相引用**，domain.md 没有 `depends_on`，不要试图加。
@@ -44,24 +46,30 @@ description: 要为 <<PROJECT>> 的 activity.md 里被 uses 引用的领域能�
 ```mermaid
 flowchart TD
     A[BP scan domain] --> B{state}
-    B -->|todo| C[① 设计契约]
-    B -->|review| D[② 澄清]
-    B -->|approve| E[③ 确认]
-    B -->|done| F([跳过])
+    B -->|new| C[① 设计契约]
+    B -->|wait_review| D[② 澄清]
+    B -->|wait_approve| E[③ 确认]
+    B -->|complete| F([跳过])
     C --> D
-    D -->|改完又冒出新问题| D
+    D --> P1[/人 答复澄清/]
+    P1 --> D
     D -->|澄清全部结清| E
-    E -->|人选补充| D
-    E -->|人选通过| G[BP domain approve]
-    G --> H([done])
+    E --> P2[/人 通过 or 补充/]
+    P2 -->|我要补充| D
+    P2 -->|通过| G[BP domain approve]
+    G --> H([complete])
+
+    classDef human fill:#fff3cd,stroke:#d39e00,stroke-width:2px
+    class P1,P2 human
 ```
 
-`review` 与 `approve` 之间来回多轮是常态，不是出错。
+黄色节点是**人的介入点，你必须停在那里等**。`wait_review` 与 `wait_approve` 之间来回多轮是常态，
+不是出错。
 
 ## 进入校验
 
-跑 `BP scan domain`。有 `todo` / `review` / `approve` 的行就按整体流程图分派、逐个推进；
-全是 `done` 说明本层没有待办，直接报告并结束，不要自己去翻文档找活干。
+跑 `BP scan domain`。有 `new` / `wait_review` / `wait_approve` 的行就按整体流程图分派、逐个推进；
+全是 `complete` 说明本层没有待办，直接报告并结束，不要自己去翻文档找活干。
 
 想看全貌（已确认 / 待设计 / 已否决）用 `BP domain list`。
 
@@ -72,7 +80,7 @@ flowchart TD
    - **「动作」里只有与调用方上下文无关的规则。** 依赖调用方业务语义的部分应该留在
      各自活动的 `A` 里，写进这里就是把耦合藏进了公共层。
 2. 跑 `BP scan domain`。
-3. 不再有 `todo` / `review` / `approve` → 通过。
+3. 不再有 `new` / `wait_review` / `wait_approve` → 通过。
 
 不能通过时，报告三件事——**卡在哪个对象、属于下面哪一种原因、需要人做什么**：
 
@@ -120,8 +128,12 @@ pipeline skill 靠这份汇报判断本层是否真有产出，人靠它核对�
    选「不提取」→ `BP domain reject "@x.y" --reason "…"`，并在完成报告里提示人回到
    activity 层把规则写回 `A`、去掉 `uses`。
 
-3. **写 domain.md**：
-   - 「职责」写清做什么、**不做什么**
+3. **写 domain.md**：先 `BP new "@<领域>.<能力名>"` 建骨架（注意加引号，`@` 开头），
+   **不要自己建目录和文件**；然后按模板填：
+   - 「概要」一句话说明这个能力对调用方承诺了什么，**单行、不超过 40 字**，超了 validate 不过。
+     `BP domain list` 直接列它，下一轮别人靠它判断「我要的能力是不是已经有了」，
+     写不清楚就会被重复提取一份
+   - 「职责」写清做什么、**不做什么**、与相邻能力的边界；不要把概要重抄一遍
    - 「契约」取各引用方需求的**并集**，用表格，首列为字段名，含失败码
    - 「动作」`A1 A2 A3` 连续编号，**只写与调用方上下文无关的部分**；
      依赖调用方业务语义的规则留在各自活动的 `A` 里

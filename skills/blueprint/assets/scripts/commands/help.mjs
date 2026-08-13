@@ -7,14 +7,22 @@ export function run() {
   bp stage [--json]                     全项目当前 stage 与该调的 skill
   bp scan [product|flow|activity|domain|code] [--all] [--json]
                                         某一层的待办清单;不带层名为总览
+                                        flow / activity 两层是「业务服务 → 流程 / 活动」的两级结构
+
+  bp new <id>                           按 id 建文档骨架,id 即路径:
+                                          <cap>.<svc>                  service.md
+                                          <cap>.<svc>.flow.<name>      业务流程(顺带建 service.md)
+                                          <cap>.<svc>.activity.<name>  业务活动
+                                          @<领域>.<能力名>              领域能力
 
   bp review ask <id> --q "<问题>"        提一个澄清问题,返回编号
   bp review answer <id> <Qn> --a "<答复>" 记录人的答复
   bp review resolve <id> <Qn> --note "<落点>"  记录落在文档的什么位置
   bp review list <id> [--json]          列出澄清记录
 
-  bp flow changes <flow>                打印待确认的流程与活动编排
-  bp flow approve <flow>                确认并盖章
+  bp flow changes <service>|<flow>      打印本轮待确认的流程与活动编排
+  bp flow approve <flow> [<flow>...]    确认本轮改动的流程,必须列全(准出会比对)
+  bp flow approve <service>             本轮无流程变更,只确认已读过新的业务描述
   bp activity changes <service>         打印活动文档变更(含被哪些流程编排)
   bp activity approve <service>         确认并盖章
   bp domain list                        全部领域能力及状态
@@ -29,9 +37,9 @@ export function run() {
   bp commit context [--json]            本轮变更的结构化摘要
   bp commit message --summary "<文本>"   拼装完整提交信息
 
-  bp status <id>                        单个对象详情
   bp scope <id>                         输出读取清单
-  bp read <id>#<章节>                    输出章节纯文本
+  bp read <id>[#<章节>]                  输出文档或某一章节的纯文本
+                                        <id> 是业务服务时读的是人写的业务描述
   bp validate [<id>]                    模板与引用校验
   bp schema pull                        导出全库到 snapshot
   bp schema check [<id>]                比对声明与 snapshot

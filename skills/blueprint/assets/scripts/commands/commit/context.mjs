@@ -14,7 +14,7 @@ export function run(cli) {
   };
   out(`商业能力范围  ${context.capabilities.join(', ') || '(无)'}`);
   out('');
-  line('商业能力', context.products);
+  line('业务描述', context.products);
   line('业务服务', context.services);
   line('业务流程', context.flows);
   line('业务活动', context.activities);

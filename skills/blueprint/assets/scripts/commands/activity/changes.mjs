@@ -1,8 +1,9 @@
 import { missingForService, activityReviews, flowsOfActivity } from '../../lib/repo.mjs';
+import { dirtyFlows } from '../../lib/stage.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx } from '../../runtime/context.mjs';
 import { serviceOrDie } from '../../runtime/entities.mjs';
-import { table } from '../../runtime/format.mjs';
+import { clip, table } from '../../runtime/format.mjs';
 import { printResolved } from '../../runtime/reviews.mjs';
 
 /** 编排该活动的流程名,共用活动的影响面靠它显示。 */
@@ -15,8 +16,10 @@ export function run(cli, [serviceId]) {
   const { repo } = ctx(cli);
   if (!serviceId) fail('用法: bp activity changes <service>');
   const service = serviceOrDie(repo, serviceId);
-  const pending = service.flows.filter((fid) => !repo.lock.flows?.[fid]?.flow);
-  if (pending.length) fail(`以下业务流程尚未通过 bp flow approve: ${pending.join(', ')}`);
+  const pending = dirtyFlows(repo, serviceId);
+  if (pending.length) {
+    fail(`以下业务流程尚未通过 bp flow approve: ${pending.map((d) => `${d.id}(${d.kind})`).join(', ')}`);
+  }
 
   const added = [];
   const modified = [];
@@ -25,7 +28,7 @@ export function run(cli, [serviceId]) {
     const activity = repo.activities.get(activityId);
     const spec = repo.lock.activities?.[activityId]?.spec;
     // 共用活动改一次会同时改变多个接口的行为,影响面必须摆在人眼前
-    const row = [`  ${activity.slug}`, activity.summary || activity.fm.title || '', usedBy(repo, activityId)];
+    const row = [`  ${activity.slug}`, clip(activity.summary, 44) || '(未写概要)', usedBy(repo, activityId)];
     if (!spec) added.push(row);
     else if (spec.activity_hash !== activity.hash) modified.push(row);
     else unaffected.push(row);

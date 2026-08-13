@@ -45,8 +45,6 @@ export function run(cli, [id]) {
     const file = snapshotTableFile(root, table.name);
     add(path.relative(root, file.path) + (file.exists ? '' : '  (缺失)'));
   }
-  add('blueprint/CONVENTIONS.md');
-
   const lockEntry = isDomain ? repo.lock.domains?.[id] : repo.lock.activities?.[id];
   const codemap = loadCodemap(root, id);
   if (lockEntry?.impl && codemap?.files?.length) {

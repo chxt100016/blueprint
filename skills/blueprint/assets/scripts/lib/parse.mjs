@@ -272,7 +272,7 @@ function parseSectionMeta(body) {
  *   <!-- bp: no-hash -->       该章节不参与哈希(如「实现提示」)
  *   <!-- bp: numbered=A -->    该章节需形如 A1 A2 的连续编号
  *
- * front-matter 的键即允许出现的字段;`entry` 的子键即该 type 下必填的入口。
+ * front-matter 的键即允许出现的字段;`entry` 的子键即流程必填的入口。
  */
 export function parseTemplateSpec(raw) {
   const { fm, hasFm, body } = parseFrontMatter(raw);
@@ -361,6 +361,25 @@ export function parseTableFirstColumn(body) {
     if (name) out.push(name);
   }
   return out;
+}
+
+/**
+ * 这一节还是模板原样留下的全角括号说明,没被填写过。
+ *
+ * 骨架期的文档要能与「填过但填错」区分开:前者是正常中间态,后者才是错误。
+ * 判据是「除了全角括号包起来的说明段之外什么都没有」。
+ */
+export function isTemplateNote(body) {
+  let inNote = false;
+  let sawNote = false;
+  for (const line of String(body ?? '').split('\n')) {
+    const text = line.trim();
+    if (!text) continue;
+    if (inNote) { if (text.endsWith('）')) inNote = false; continue; }
+    if (text.startsWith('（')) { sawNote = true; inNote = !text.endsWith('）'); continue; }
+    return false;
+  }
+  return sawNote;
 }
 
 // ------------------------------------------------------------------- 工具

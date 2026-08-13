@@ -1,14 +1,12 @@
-import fs from 'node:fs';
-
-import { exists } from '../../lib/parse.mjs';
 import {
-  anchorOf, loadLock, missingForService, saveLock, activityReviews, flowsHash,
+  loadLock, missingForService, saveLock, activityReviews, flowsHash,
 } from '../../lib/repo.mjs';
+import { dirtyFlows } from '../../lib/stage.mjs';
 import { validateActivity, validateFlow, validateService } from '../../lib/schema.mjs';
 import { errOut, fail, out } from '../../runtime/cli.mjs';
 import { ctx, nowIso } from '../../runtime/context.mjs';
 import { serviceOrDie } from '../../runtime/entities.mjs';
-import { requireCleanReviews } from '../../runtime/reviews.mjs';
+import { requireCleanReviews, settleReviews } from '../../runtime/reviews.mjs';
 import { printErrors } from '../../runtime/validation.mjs';
 
 export function run(cli, [serviceId]) {
@@ -17,16 +15,15 @@ export function run(cli, [serviceId]) {
   const service = serviceOrDie(repo, serviceId);
 
   // 活动被本服务的多个流程共用,所以要求全部流程都已定稿才进活动层
-  const pending = service.flows.filter((fid) => !repo.lock.flows?.[fid]?.flow);
-  if (pending.length) fail(`以下业务流程尚未通过 bp flow approve: ${pending.join(', ')}`);
-
-  for (const fid of service.flows) {
-    const flow = repo.flows.get(fid);
-    const anchor = anchorOf(repo, flow.product);
-    if (!anchor) fail(`product 锚点 ${flow.product} 不存在`);
-    if (anchor.anchor.hash !== repo.lock.flows[fid].flow.product_hash) {
-      fail(`product 描述在 ${fid} 的 flow approve 之后又被改过,流程需重新整理。先跑 bp stage`);
-    }
+  const pending = dirtyFlows(repo, serviceId);
+  if (pending.length) {
+    fail(`以下业务流程尚未通过 bp flow approve: ${pending.map((d) => `${d.id}(${d.kind})`).join(', ')}`);
+  }
+  const flowLock = repo.lock.services?.[serviceId]?.flow;
+  if (!flowLock) fail(`${serviceId} 尚未通过 bp flow approve`);
+  if (!service.product) fail(`${serviceId} 的业务描述 ${service.productRel} 不存在`);
+  if (service.product.hash !== flowLock.product_hash) {
+    fail(`${service.productRel} 在流程确认之后又被改过,流程需重新过一遍。先跑 bp stage`);
   }
 
   requireCleanReviews(activityReviews(repo, serviceId));
@@ -63,10 +60,9 @@ export function run(cli, [serviceId]) {
   };
   saveLock(repo.root, lockData);
 
-  for (const target of activityReviews(repo, serviceId)) {
-    if (exists(target.path)) fs.rmSync(target.path);
-  }
+  const settled = settleReviews(activityReviews(repo, serviceId));
   const missing = missingForService(repo, serviceId);
   out(`已确认 ${serviceId} 的 ${service.activities.length} 个业务活动(供 ${service.flows.length} 个流程编排)`);
+  if (settled) out(`${settled} 条澄清已存档到各活动澄清记录的「已确认」`);
   if (missing.length) out(`其中登记了 ${missing.length} 个待设计的领域能力:${missing.join(', ')}`);
 }

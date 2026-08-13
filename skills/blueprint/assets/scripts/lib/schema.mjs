@@ -1,11 +1,11 @@
 // 模板与引用校验。所有 validate 规则集中在此。
 import path from 'node:path';
 import {
-  findSection, sectionTitles, extractFences,
+  findSection, sectionTitles, extractFences, isTemplateNote,
   parseOrderedSteps, parseRules, parseTableFirstColumn,
 } from './parse.mjs';
-import { splitDomainId, splitUnitId, serviceOf, ACTIVITY_MARK } from './config.mjs';
-import { anchorOf, toArray } from './repo.mjs';
+import { splitDomainId, splitUnitId, SLUG, ACTIVITY_MARK } from './config.mjs';
+import { toArray } from './repo.mjs';
 
 function err(list, where, msg) {
   list.push({ where, msg });
@@ -64,6 +64,31 @@ function checkTables(errors, where, tables) {
   });
 }
 
+/**
+ * 「概要」的硬约束:单行、不超过 40 字。三层文档共用。
+ *
+ * 它是各层清单(`bp scan flow` / `bp scan activity` / `bp domain list`)唯一直接列出的正文,
+ * 人和 AI 靠它在不打开文件的情况下认出一个对象、判断「我要的是不是已经有了」。
+ * 一旦允许写成一段,清单就会被淹掉,而清单被淹掉之后没人会去修——所以这条要卡死。
+ */
+const SUMMARY_MAX = 40;
+
+function checkSummary(errors, where, summary) {
+  const text = String(summary || '').trim();
+  if (!text) return; // 空的情况由 checkNonEmpty 报,不重复
+  if (isTemplateNote(text)) {
+    err(errors, where, '「概要」还是模板里的说明文字,没有填写');
+    return;
+  }
+  if (text.split('\n').filter((l) => l.trim()).length > 1) {
+    err(errors, where, '「概要」要写成一行,不要分段');
+    return;
+  }
+  if ([...text].length > SUMMARY_MAX) {
+    err(errors, where, `「概要」不超过 ${SUMMARY_MAX} 字,实际 ${[...text].length} 字`);
+  }
+}
+
 // --------------------------------------------------------------------- flow
 
 /** 单个业务流程 = 一个对外接口。 */
@@ -77,10 +102,9 @@ export function validateFlow(repo, flowId) {
   checkSections(errors, where, sectionTitles(flow.sections), tpl.titles);
   checkFmFields(errors, where, flow.fm, tpl.fmFields);
 
-  if (flow.fm.flow !== flowId) {
-    err(errors, where, `front-matter 的 flow (${flow.fm.flow ?? '缺失'}) 与路径不一致`);
+  if (flow.fm.id !== flowId) {
+    err(errors, where, `front-matter 的 id (${flow.fm.id ?? '缺失'}) 与路径不一致`);
   }
-  if (!flow.fm.title) err(errors, where, 'front-matter 缺少 title');
 
   // entry:一个流程一个对外接口,接口是流程的属性而不是活动的
   const entry = flow.fm.entry || {};
@@ -91,14 +115,8 @@ export function validateFlow(repo, flowId) {
     if (!tpl.entryFields.includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
   }
 
-  const ref = flow.fm.product;
-  if (!ref || typeof ref !== 'string' || !ref.includes('#')) {
-    err(errors, where, 'product 应形如 `<商业能力>#<业务服务>`');
-  } else if (!anchorOf(repo, ref)) {
-    err(errors, where, `product 锚点 \`${ref}\` 不存在`);
-  }
-
   checkNonEmpty(errors, where, flow.sections, tpl.titles);
+  checkSummary(errors, where, flow.summary);
 
   // 流程图:含且仅含一个 mermaid 代码块,首行为 flowchart。
   // 图与「流程」步骤的逐条对应不做校验——归一化只能抹平标点空白,抹不平措辞,
@@ -143,26 +161,18 @@ export function validateService(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   const where = serviceId;
   if (!svc) { err(errors, where, '业务服务不存在'); return errors; }
+  // 业务服务由 product 文档定义,没有文档就没有这个服务
+  if (!svc.product) {
+    err(errors, where, `人写的业务描述 ${svc.productRel} 不存在;若是改名,把 spec 目录一并改过来`);
+  }
+  for (const part of [svc.capability, svc.slug]) {
+    if (!SLUG.test(part)) {
+      err(errors, where, `\`${part}\` 不是合法的目录名(小写字母、数字、连字符),id 由路径拼出,必须用英文`);
+    }
+  }
   if (!svc.flows.length) {
     err(errors, where, `目录存在但没有任何业务流程文件: ${path.relative(repo.root, svc.dir)}`);
     return errors;
-  }
-
-  // 一个服务目录只认领一个 product 锚点:同锚点的流程必须放在一起,否则活动无法共用
-  const anchors = new Set();
-  for (const fid of svc.flows) {
-    const ref = repo.flows.get(fid)?.product;
-    if (ref) anchors.add(ref);
-  }
-  if (anchors.size > 1) {
-    err(errors, where, `同一服务目录下的流程声明了多个 product 锚点: ${[...anchors].join(', ')}`);
-  }
-  for (const ref of anchors) {
-    const others = (repo.anchorUsers.get(ref) || [])
-      .filter((fid) => serviceOf(fid) !== serviceId);
-    if (others.length) {
-      err(errors, where, `锚点 \`${ref}\` 还被其他服务目录的流程引用: ${others.join(', ')}`);
-    }
   }
 
   // 活动目录 ↔ 各流程编排的并集,一一对应:活动层 approve 之后才校验
@@ -198,9 +208,8 @@ export function validateActivity(repo, id) {
   checkFmFields(errors, where, act.fm, tpl.fmFields);
 
   if (act.fm.id !== id) err(errors, where, `front-matter 的 id (${act.fm.id ?? '缺失'}) 与路径不一致`);
-  if (!act.fm.title) err(errors, where, 'front-matter 缺少 title');
-  // summary 由活动自己持有:它被多个流程编排,说明不能寄存在某一份流程文档里
-  if (!act.fm.summary) err(errors, where, 'front-matter 缺少 summary(一句话说明,由活动自己持有)');
+  // 概要由活动自己持有:它被多个流程编排,说明不能寄存在某一份流程文档里
+  checkSummary(errors, where, act.summary);
 
   const svc = repo.services.get(act.service);
   if (svc && !svc.activityList.some((i) => i.slug === act.slug)) {
@@ -321,7 +330,7 @@ export function validateDomain(repo, id) {
   checkFmFields(errors, where, dom.fm, tpl.fmFields);
 
   if (dom.fm.id !== id) err(errors, where, `front-matter 的 id (${dom.fm.id ?? '缺失'}) 与路径不一致`);
-  if (!dom.fm.title) err(errors, where, 'front-matter 缺少 title');
+  checkSummary(errors, where, dom.summary);
   const [group, name] = splitDomainId(id);
   if (!group || !name) err(errors, where, 'id 应形如 `@<领域>.<能力名>`');
 
@@ -374,11 +383,11 @@ export function validateId(repo, id) {
   if (repo.flows.has(id)) return validateFlow(repo, id);
   if (repo.activities.has(id)) return validateActivity(repo, id);
   if (repo.domains.has(id)) return validateDomain(repo, id);
-  if (repo.products.has(id)) {
+  // 商业能力:没有自己的文档,校验它就是校验它下面全部业务服务
+  const inCapability = [...repo.services.values()].filter((svc) => svc.capability === id);
+  if (inCapability.length) {
     const out = [];
-    for (const svc of repo.services.values()) {
-      if (svc.capability === id) out.push(...validateServiceTree(repo, svc.id));
-    }
+    for (const svc of inCapability) out.push(...validateServiceTree(repo, svc.id));
     return out;
   }
   return [{ where: id, msg: '找不到该 id 对应的对象' }];
