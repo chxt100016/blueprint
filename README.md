@@ -56,17 +56,18 @@ node ~/.claude/skills/blueprint/bootstrap.mjs \
 
 | stage | 处理者 |
 |---|---|
-| `orphaned` | 人确认清理清单 |
-| `blocked` | 人执行 `blueprint/todo/` 中的工单 |
 | `flow` | flow skill |
 | `activity` | activity skill |
 | `domain` | domain skill |
 | `code` | code skill |
 | `commit` | commit skill |
-| `ready` | 无待办 |
+| `none` | 无待办 |
 
-流水线依次按 `orphaned → blocked → flow → activity → domain → code → commit → 新服务 → ready`
-推进。中途新写的业务服务会等当前这一波清空，不会打断正在进行的阶段。
+流水线依次按 `flow → activity → domain → code → commit → none` 推进——取件顺序就是依赖链本身。
+
+两类「AI 推不动」的事不占 stage，只作为附注打在 `bp stage` 的输出里，不阻断分派：
+引用断裂的对象（重命名后的残留）打在顶部作告警，等人执行工单或补表结构的对象列在末尾。
+它们等的人做的事与当前 stage 该做的事互不相干，卡住流水线只会让 AI 无谓地停工。
 
 人只需要在四类节点介入：
 
@@ -74,18 +75,17 @@ node ~/.claude/skills/blueprint/bootstrap.mjs \
   划错了下面的活动与代码全要返工。
 - 回答 flow / activity / domain skill 的澄清问题。
 - 审核 `flow changes`、`activity changes`、`domain changes` 打印的变更清单；确认后 skill 才会执行 approve。
-- 执行 `blueprint/todo/` 中的副作用工单，完成后移入 `blueprint/todo/done/`，数据库变更再执行 `node blueprint/scripts/bp.mjs schema pull`。
+- 执行 `blueprint/todo/` 中的副作用工单，完成后移入 `blueprint/todo/done/`，数据库变更再执行 `node blueprint/scripts/bp.mjs snapshot pull db`。
 
 常用命令：
 
 ```bash
-node blueprint/scripts/bp.mjs stage              # 查看当前 stage
-node blueprint/scripts/bp.mjs scan               # 全局完成度
+node blueprint/scripts/bp.mjs stage              # 查看当前 stage 与全局进度
 node blueprint/scripts/bp.mjs scan <layer>       # 某层待办明细
 node blueprint/scripts/bp.mjs new <id>           # 按 id 建文档骨架(id 即路径)
-node blueprint/scripts/bp.mjs review list <id>   # 查看澄清记录
-node blueprint/scripts/bp.mjs validate [<id>]    # 校验文档与引用
-node blueprint/scripts/bp.mjs which <file>       # 反查文件所属对象
+node blueprint/scripts/bp.mjs validate [<id>]    # 校验文档与引用,含表结构比对
+node blueprint/scripts/bp.mjs snapshot pull db   # 导出全库结构
+node blueprint/scripts/bp.mjs snapshot pull rpc  # 按 context/rpc 里的 curl 采样外部接口
 node blueprint/scripts/bp.mjs help               # 完整命令表
 ```
 
@@ -105,16 +105,18 @@ skills/blueprint/
       schema.mjs           模板与引用校验(validate)
       review.mjs           澄清记录的解析与读写
       stage.mjs            stage 判定与分层 scan
-      db.mjs               snapshot 的导出与比对
+      db.mjs               db snapshot 的导出与比对
+      rpc.mjs              外部 HTTP 接口的采样与快照
       codemap.mjs          业务活动/领域能力到代码文件的索引
     templates/*.md         五份业务文档模板
     config.yaml            config 骨架
     skills/*.md            七个 *-{project} skill 的母版
     context-README.md
+    rpc-README.md
 ```
 
 六个流水线 skill：`pipeline` `flow` `activity` `domain` `code` `commit`，
-与除 `orphaned` / `blocked` / `ready` 外的每个 stage 一一对应。
+与除 `none` 外的每个 stage 一一对应。
 `ui-<project>` 由人给出已确认的 flow ID 后调用。它通过 BP 读取接口契约，使用
 `blueprint/ui/` 中的项目级 UI 上下文确定页面落点并实现；首次使用时会先和人讨论并建立上下文。
 
@@ -159,6 +161,8 @@ id 的第三段是固定的层级标记：流程是 `<cap>.<svc>.flow.<name>`，
 
 流水线中的实现与 `blueprint/codemap/<capability>/<service>/<activity>.yaml` 索引由 code skill 写入，
 提交由 commit skill 执行，二者都不写上面这六层的任何文档。
+code skill 自己不写代码：**一个业务活动/领域能力派一个 subagent**，它只做取读取清单、
+派活、验收三件事，实现细节不进它的上下文。这一层没有人工介入点，是全流水线唯一能这么切的地方。
 
 UI skill 维护另一类项目上下文：
 
@@ -193,7 +197,9 @@ blueprint/ui/
   每道门都是 AI 先打印完整变更清单、人选「通过」或「我要补充」，选了通过 AI 才执行 approve。
   flow 层还有一道**准出闸门**：实际变更的流程必须与 AI 确认时列出的完全一致，
   否则拒绝盖章——防止「人看的是 B，改的却是 A」。
-  **code 阶段没有门**——设计决策已在前三道定完，正确性由 verify 判定。
+  **code 阶段没有门**——设计决策已在前三道定完，正确性由 verify 与**动作覆盖比对**判定：
+  codemap 的每个文件用 `covers` 声明落实了哪几条业务动作，`bp code done` 要求
+  文档里的 `A1 A2 A3` 每一条都被某个文件认领，少一条不放行。
 - **澄清在会话内完成**。flow / activity / domain 每轮至少提 3 个问题，用选择工具问人，
   当场答不上来可以留到下一轮。答复与落点由脚本记进 `*.review.md`，AI 不碰这个文件的格式。
   **盖章后这些条目迁入该文件的「已确认」区长期留存**，不再删除——「当初为什么这样定」有据可查，
@@ -211,32 +217,45 @@ blueprint/ui/
 
 1. **stage 是全局的，不是每个对象一个**。规范给每个对象各自判定 stage，实现上改为
    「整个项目当前处于哪一层」，因为流水线的每一步都要人参与，同时推进多层会让人
-   在不同抽象层级之间反复切换。取件顺序为
-   `orphaned → blocked → flow → activity → domain → code → commit → 新服务 → ready`。
-2. **新写的业务服务排在最后**。人中途在 product 下新写一个服务不会打断当前这一波，
-   它会等整条链清空。这是「先把手上的活干完」的机制保障，不依赖人自觉。
+   在不同抽象层级之间反复切换。取件顺序就是依赖链本身，没有旁支：
+   `flow → activity → domain → code → commit → none`。
+2. **「AI 推不动的事」不占 stage，只作附注**。有两类：引用断裂的残留对象（多半是重命名造成的），
+   以及等人执行 todo 工单或补表结构的对象。前者打在 `bp stage` 输出顶部作告警，
+   后者列在末尾，都不改变 stage、不打断分派。
+   早先它们各占一个 stage（`orphaned` 排最前、`blocked` 排最后），问题是：
+   孤儿不属于任何一层，没有哪个 skill 该拿它当待办（skill 的职责是产出文档，不是删东西），
+   而排在最前会让一个重命名残留把整条线停死；`blocked` 虽然排在最后不至于卡住上游，
+   但它与 `none` 想说的其实是同一件事——AI 没有能自动推进的事了。
+   两者都降级成附注之后，人该做的事一件没少，AI 却不会再无谓停工。
 3. **领域能力独立成 `domain` 阶段**。规范把能力文档的产出挂在活动层的 approve 上，
    实现上拆开：activity 只识别并登记 `uses`（且新提取的候选要问人），
    domain 阶段负责设计契约并单独 approve。代价是多一个阶段，收益是每个 skill 只对一个抽象层负责。
-4. **activity / domain / code 层的对象状态有四种**：`new` / `wait_review` / `wait_approve` / `complete`。
-   区分「上游变了但本层还没跟进」与「本层已跟进等确认」，靠比对本层文档自身的哈希——
-   上游哈希对不上而本层文档也变了，说明 skill 已经动过手。没有这个区分，
-   「上游变更 → 本层重做」会死循环。
-   **flow 层是例外**：它只有 `new` / `updated` / `complete`，粒度是业务服务不是流程。
-   同一个服务的几个接口本就要一起想，把它们拆成互不相干的状态支线只会让 skill 来回跳；
-   「哪个流程这一轮该改」每次重新判断，由 approve 的准出闸门兜底。
-5. **失联对象使用 `error`；code 层另有 `blocked` 与 `waiting` 两个状态**。`error` 会让全局进入
-   `orphaned` stage；`blocked` 等人（todo 工单、schema 缺口），`waiting` 等 domain 层先产出契约。
-   `waiting` 不参与 stage 判定——把它算作 `blocked` 会让
-   全局卡在 blocked（排在 domain 之前），而人对此无事可做。
+4. **层内不设对象状态**。一行只有 id 与 detail，判据是「detail 非空 = 有事要做」。
+   状态词经历过两轮裁剪：activity / domain 两层最初各有一套
+   `new` / `wait_review` / `wait_approve` / `complete` 的四态状态机，先压成四层共用的
+   `new` / `updated` / `complete` 三态，最后整个删掉。
+   四态的问题是把本该一起想的几个对象拆成互不相干的支线，且 `wait_review` 与 `wait_approve`
+   的区分靠「本层文档自身哈希变没变」这个隐式约定，AI 只改了不参与哈希的章节时状态就不动。
+   三态的问题是没有消费者：scan 与 stage 判定一律只过滤 `complete`，三层 skill 的文档
+   也都写着「都从第一步进」——状态词想说的「新写还是改写」「上游变了还是澄清没结清」
+   全在 detail 里，留着状态列只是把同一件事说两遍。
+   「澄清结清没有」由 approve 的准出闸门兜底，不需要在 scan 阶段就分类。
+   code 层的「等人」那组改用分组表达而非状态词，见第 2 条；活动 `uses` 的领域能力
+   还没设计时也不单开一组，只在 detail 里标一句：那批 id 同时也是 domain 层的待办，
+   而 domain 层排在 code 之前，全局判定走到 code 时它必然已经清空。
+5. **snapshot 从没导出过时不判 schema 缺口**。空 snapshot 只说明还没跑过 `bp snapshot pull db`，
+   不代表库里没有这些表。少了这道守卫，凡是在 front-matter 声明了 `tables` 的项目，
+   整个 code 层都会被判成「等人补表结构」。判据与 `bp validate` 的表结构比对保持一致。
 6. **review 机制重做**。规范的三区（待确定/改动建议/已解决）+ 人手写 `>` 答复，
    改为脚本独占读写的两区（待答复/已答复）与三条命令 `ask` / `answer` / `resolve`，
    人的答复通过选择工具当场收集。保留了规范里最关键的一环：resolve 必须写落点，
    落点进入确认清单——AI 声称按答复改了却没改，不产生 diff、不触发校验，人过目是唯一捕获时机。
 7. **lock 的领域能力 spec 段增加 `contract_fields`**。§7.6 第 7 条要求校验契约只增不改，
    而 lock 里只有哈希还原不出字段表，因此 approve 时一并记录契约表首列。
-8. **lock 增加 `rejected_domains`**。人否决过的能力提取候选记在这里，
-   避免 activity skill 每轮重新识别、重复询问同一件事。
+8. **人否决的能力提取候选不进 lock**。判据只有一条引用关系：活动写不写 `uses`。
+   选「不提取」就不写 `uses`，domain 层自然看不到它，也就不会再问第二次；
+   已经写了 `uses` 又判定不宜提取的，只能回 activity 层去掉那条引用——
+   在引用还挂着的时候把「否决」记进 lock 并不能让 scan 清零，只会让人以为处理完了。
 9. **业务活动归属服务，不归属流程**。一个服务的多个流程（对外接口）共享一个活动池，
    活动目录与流程文件同层。这样同一次交付的不同入口能直接复用活动，
    不必为了共用而把步骤上升成领域能力；代价是改一个共用活动会影响多个接口，
@@ -253,13 +272,13 @@ blueprint/ui/
    只校验「含且仅含一个 mermaid 块、首行为 `flowchart`」与「『流程』是有序步骤」。
 13. **lib 比规范多两个模块**：`repo.mjs`（仓库模型）与 `db.mjs`（snapshot）。
    母版安装逻辑完全收在独立的 `bootstrap.mjs`，不进入项目运行时。规范列出的七个模块职责不变。
-14. **`schema pull` 依赖系统自带的 CLI**（`pg_dump` / `mysqldump` / `sqlite3`），
+14. **`snapshot pull db` 依赖系统自带的 CLI**（`pg_dump` / `mysqldump` / `sqlite3`），
    以保持脚本零 npm 依赖。sqlite 路径已端到端验证；postgres 与 mysql 走同一套语句拆分逻辑，
    但未在真实库上实测。
 15. **`commit context` 的新增/修改判定依赖 `git status`**。非 git 仓库时无法区分，
    一律算作修改。提交信息不细到业务动作（`A1 A2`）一级——那需要 `git show` 取旧版本逐个解析，
    多轮 git 调用换来的信息量不值。
-16. **没有 upgrade 与 doctor**。母版仍在迭代，暂不为存量项目的平滑升级与安装体检投入；
+16. **没有 upgrade 与 doctor**。母版仍在迭代，暂不为平滑升级与安装体检投入；
    `init` 幂等（生成物覆盖、定制物保留），重跑它就是刷新生成物。代价是 `config.yaml`
    新增字段要手动补，模板结构变了要人工迁移文档。母版稳定后再补这两条命令。
 17. **模板是校验的唯一真相源**。规范把章节结构写在文档里，实现上则由 `config.mjs`
@@ -269,7 +288,18 @@ blueprint/ui/
    且重跑 init 覆盖 templates 时项目内的定制会丢。
 18. **活动与能力的「行为规则」章节改称「动作」，编号 `R` 改为 `A`**，与业务架构层次里的
    「业务动作」对齐。这是纯模板改动，脚本无需改动即生效。
+19. **codemap 增加 `covers`，code 层由此获得一道确定性判定**。前三层各有一道人工确认门，
+   code 层没有，而 verify 只判编译过不过——漏实现一条动作，两关都不会响。
+   现在 codemap 的每个文件声明自己落实了哪几条 `A` 编号，`bp code done` 比对两个集合：
+   少一条不放行，声明了文档里不存在的编号也不放行（那多半是文档改过而 codemap 没跟）。
+   代价是已有 codemap 都要补 `covers`，没有兼容期。
+20. **code 层按对象派 subagent**。它是唯一没有人工介入点的一层，输入边界由 `bp scope`
+   给死，成功判据是 `bp code done` 的退出码——三个条件同时成立，才切得干净。
+   前三层不能这么切：它们的核心是「问人、等人答」，subagent 停不下来等人，
+   切进去等于让它替人回答澄清，三道门就废了。
+   粒度是一个业务活动/领域能力一个 subagent，串行派发——同一批对象常落在同一个目录甚至
+   同一个文件里，并行会互相覆盖。
 
-规范 §19 已知限制（重命名等价于删除重建、schema pull 连生产库、
+规范 §19 已知限制（重命名等价于删除重建、snapshot pull db 连生产库、
 tables 只声明列名、代码不计算哈希、并发协作未定义、以编译为门禁）在本实现中同样存在。
 **并行开发暂不支持**：整个项目按波次推进，中途插入的需求要等下一轮，或用 git worktree 隔离。

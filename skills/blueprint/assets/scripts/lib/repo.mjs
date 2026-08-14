@@ -8,9 +8,8 @@
 //   activities  spec/<capability>/<service>/<act>/     业务活动:一次状态变更
 //   domains     domain/<domain>/<name>/                领域能力(横切层)
 //
-// **路径即 id**:`product/order/checkout.md` 就是业务服务 `order.checkout`,
-// 不再有「文件内二级标题作为锚点」那一层间接。文档里因此不需要声明自己属于谁,
-// front-matter 的 id 只是给人看的冗余,校验时与路径比对。
+// **路径即 id**:`product/order/checkout.md` 就是业务服务 `order.checkout`。
+// 文档因此不需要声明自己属于谁,front-matter 的 id 只是给人看的冗余,校验时与路径比对。
 //
 // 业务活动归属服务而不是流程:同一次交付的多个入口共享一个活动池,
 // 流程只是活动的编排。所以活动目录与流程文件同层。
@@ -28,6 +27,7 @@ import {
 import { hashDoc, sha256 } from './hash.mjs';
 import { parseReview } from './review.mjs';
 import { bpPath, loadConfig, FLOW_MARK, ACTIVITY_MARK } from './config.mjs';
+import { BpError } from './error.mjs';
 
 export const LOCK_VERSION = 5;
 
@@ -45,40 +45,23 @@ function readReview(file) {
   return parseReview(raw);
 }
 
-const MIGRATE_HINT = `lock.json 是 v%OLD%,当前脚本要求 v${LOCK_VERSION}。
-
-v5 做了两件事:取消 product 锚点(商业能力从一个文件变成一个目录,业务服务从二级标题
-变成目录下的一份 .md,路径直接就是 id),以及把每份文档的一句话说明统一成「## 概要」章节。
-需要人工迁移:
-
-  1. product/<cap>.md 拆开:每个二级标题各成一份 product/<cap>/<service>.md,
-     文件名用英文 kebab-case,与 spec/<cap>/<service>/ 的目录名一致
-  2. 各流程文件的 front-matter:去掉 flow、title、product 三个字段,换成
-     id: <cap>.<svc>.flow.<name>
-  3. 各 activity.md 去掉 title 与 summary,各 domain.md 去掉 title
-  4. 三种文档(flow / activity / domain)都在正文最前面加一节「## 概要」:
-     单行、不超过 40 字。activity 的概要就是原来 front-matter 里那个 summary
-  5. service.md 的 front-matter:service / title / product 三个字段换成 id: <cap>.<svc>
-  6. lock.json:flows.<id>.product_anchor 删除,flows.<id>.flow.product_hash 移到
-     services.<svc>.flow.product_hash(值需重算),version 改 5
-  7. 重新走一遍三层 approve(front-matter 与章节都变了,哈希必然失效)`;
-
 export function loadLock(root) {
   const file = bpPath(root, 'lock.json');
   const raw = readFileSafe(file);
   if (raw === null) return { version: LOCK_VERSION, services: {}, flows: {}, activities: {}, domains: {} };
   let lock;
-  try { lock = JSON.parse(raw); } catch (e) { throw new Error(`lock.json 解析失败: ${e.message}`); }
+  try { lock = JSON.parse(raw); } catch (e) { throw new BpError(`lock.json 解析失败: ${e.message}`); }
   const hasContent = Object.keys(lock.services || {}).length ||
     Object.keys(lock.activities || {}).length || Object.keys(lock.domains || {}).length;
+  // 没有 upgrade 命令,版本对不上只能重来:文档结构与哈希取材都可能变过
   if (hasContent && Number(lock.version) < LOCK_VERSION) {
-    throw new Error(MIGRATE_HINT.replace('%OLD%', lock.version ?? '(未知)'));
+    throw new BpError(`lock.json 是 v${lock.version ?? '(未知)'},当前脚本要求 v${LOCK_VERSION}。`
+      + '\n重新跑 init 刷新生成物,再走一遍三层 approve 重新盖章。');
   }
   lock.services = lock.services || {};
   lock.flows = lock.flows || {};
   lock.activities = lock.activities || {};
   lock.domains = lock.domains || {};
-  lock.rejected_domains = lock.rejected_domains || {};
   return lock;
 }
 
@@ -138,7 +121,7 @@ function makeService(root, id, product) {
   return {
     id, capability, slug, dir,
     rel: path.relative(root, dir),
-    // 人写的业务描述。缺失说明服务被删或改名,由 orphaned 层处理
+    // 人写的业务描述。缺失说明服务被删或改名,由孤儿告警报出
     product,
     productRel: product ? product.rel : path.join('blueprint', 'product', capability, `${slug}.md`),
     hasSpecDir: exists(dir),
@@ -165,7 +148,7 @@ function loadSpec(root, cfg, products, domainUses, activityUsers) {
   for (const capability of listDirs(specDir)) {
     for (const slug of listDirs(path.join(specDir, capability))) {
       const id = `${capability}.${slug}`;
-      // spec 目录在、product 文档不在:多半是人改了 product 里的文件名,交 orphaned 层处理
+      // spec 目录在、product 文档不在:多半是人改了 product 里的文件名,孤儿告警会报出
       if (!services.has(id)) { services.set(id, makeService(root, id, null)); strays.push(id); }
       const service = services.get(id);
       const dir = service.dir;
@@ -360,17 +343,6 @@ export function activityPool(repo, serviceId) {
   });
 }
 
-/** 按商业能力分组的业务服务 id。 */
-export function byCapability(repo) {
-  const out = new Map();
-  for (const id of [...repo.services.keys()].sort()) {
-    const cap = repo.services.get(id).capability;
-    if (!out.has(cap)) out.set(cap, []);
-    out.get(cap).push(id);
-  }
-  return out;
-}
-
 export function toArray(v) {
   if (v === null || v === undefined) return [];
   return Array.isArray(v) ? v : [v];
@@ -425,12 +397,4 @@ export function servicesOfDomain(repo, domain) {
   const introduced = repo.lock.domains?.[domain.id]?.spec?.introduced_by;
   if (introduced) set.add(introduced);
   return [...set];
-}
-
-export function findObject(repo, id) {
-  if (repo.services.has(id)) return { kind: 'service', obj: repo.services.get(id) };
-  if (repo.flows.has(id)) return { kind: 'flow', obj: repo.flows.get(id) };
-  if (repo.activities.has(id)) return { kind: 'activity', obj: repo.activities.get(id) };
-  if (repo.domains.has(id)) return { kind: 'domain', obj: repo.domains.get(id) };
-  return null;
 }

@@ -31,23 +31,29 @@ export function buildCommitContext(repo) {
   const domains = [];
   const others = [];
 
+  // 同一份文件在 git status 里出现多行时(索引里删了又作为未跟踪文件回来那类),
+  // 只留先出现的那条,否则提交信息里同一个 id 会重复成两行。
+  const add = (list, id, kind) => {
+    if (!list.some((item) => item.id === id)) list.push({ id, kind });
+  };
+
   for (const { status, file } of changed) {
     const kind = isNew(status) ? '新增' : '修改';
     let match;
     if ((match = file.match(/^blueprint\/product\/([^/]+)\/([^/]+)\.md$/))) {
       // 人写的业务描述:一份文件一个业务服务,路径即 id
-      products.push({ id: `${match[1]}.${match[2]}`, kind });
+      add(products, `${match[1]}.${match[2]}`, kind);
     } else if ((match = file.match(/^blueprint\/spec\/([^/]+)\/([^/]+)\/service\.md$/))) {
-      services.push({ id: `${match[1]}.${match[2]}`, kind });
+      add(services, `${match[1]}.${match[2]}`, kind);
     } else if ((match = file.match(/^blueprint\/spec\/([^/]+)\/([^/]+)\/([^/]+)\/activity\.md$/))) {
-      activities.push({ id: `${match[1]}.${match[2]}.${ACTIVITY_MARK}.${match[3]}`, kind });
+      add(activities, `${match[1]}.${match[2]}.${ACTIVITY_MARK}.${match[3]}`, kind);
     } else if ((match = file.match(/^blueprint\/spec\/([^/]+)\/([^/]+)\/([^/]+)\.md$/))) {
       // 流程是服务目录下的 .md 文件,澄清记录不算
       if (!match[3].endsWith('.review')) {
-        flows.push({ id: `${match[1]}.${match[2]}.${FLOW_MARK}.${match[3]}`, kind });
+        add(flows, `${match[1]}.${match[2]}.${FLOW_MARK}.${match[3]}`, kind);
       }
     } else if ((match = file.match(/^blueprint\/domain\/([^/]+)\/([^/]+)\/domain\.md$/))) {
-      domains.push({ id: `@${match[1]}.${match[2]}`, kind });
+      add(domains, `@${match[1]}.${match[2]}`, kind);
     } else if (!file.startsWith('blueprint/')) {
       others.push(file);
     }

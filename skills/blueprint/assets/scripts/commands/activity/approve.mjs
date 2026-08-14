@@ -2,7 +2,9 @@ import {
   loadLock, missingForService, saveLock, activityReviews, flowsHash,
 } from '../../lib/repo.mjs';
 import { dirtyFlows } from '../../lib/stage.mjs';
-import { validateActivity, validateFlow, validateService } from '../../lib/schema.mjs';
+import {
+  activityDirMismatch, validateActivity, validateFlow, validateService,
+} from '../../lib/schema.mjs';
 import { errOut, fail, out } from '../../runtime/cli.mjs';
 import { ctx, nowIso } from '../../runtime/context.mjs';
 import { serviceOrDie } from '../../runtime/entities.mjs';
@@ -28,10 +30,9 @@ export function run(cli, [serviceId]) {
 
   requireCleanReviews(activityReviews(repo, serviceId));
 
-  const listed = service.activityList.map((item) => item.slug);
-  const dirs = service.activities.map((activity) => activity.split('.').pop());
-  const onlyListed = listed.filter((slug) => !dirs.includes(slug));
-  const onlyDirs = dirs.filter((slug) => !listed.includes(slug));
+  // validateService 里的同一条检查只在活动层盖过章之后才跑,首次确认时轮不到它,
+  // 所以这里无条件查一遍——判据共用 activityDirMismatch,不是两套实现
+  const { onlyListed, onlyDirs } = activityDirMismatch(repo, serviceId);
   if (onlyListed.length || onlyDirs.length) {
     errOut('「活动编排」与活动目录不一致:');
     for (const slug of onlyListed) errOut(`  编排中有但目录缺失: ${slug}`);

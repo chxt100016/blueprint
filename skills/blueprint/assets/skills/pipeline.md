@@ -11,24 +11,26 @@ description: 用户要求新增或推进 <<PROJECT>> 的 blueprint 业务规范�
 
 blueprint 流水线的调度器：按 `BP stage` 给出的结果分派给下一层 skill，直到没有待办。
 
-- **层级** 调度，不属于业务架构的任何一层
-- **唯一写入** 什么都不写
-- **上游** 人的请求
-- **下游** flow / activity / domain / code / commit 五个 skill
-- **不碰** 所有 blueprint 文档、所有代码、所有 `approve` 命令；所有产出都通过对应的 skill 完成，
-  approve 由它们在人确认后执行
+| | |
+|---|---|
+| 所在层级 | 调度，不属于业务架构的任何一层 |
+| 读入 | 人的请求 |
+| 写出 | 什么都不写 |
+| 交给下游 | flow / activity / domain / code / commit 五个 skill |
 
 ## 约束
 
-- **只调用 BP 提供的命令，不要自己写脚本，不要直接读写 `blueprint/lock.json` 与 `*.review.md`。**
-  下文 `BP` 代指 `node blueprint/scripts/bp.mjs`，在项目根目录执行。
+- **只调用 BP 提供的命令，不要自己写脚本。** 下文 `BP` 代指 `node blueprint/scripts/bp.mjs`，
+  在项目根目录执行。
+- **所有产出都通过对应的 skill 完成**，`approve` 由它们在人确认后执行。
 - **该做什么以脚本为准，不要自己发散。** 不要读 lock.json 去推断进度，不要比较哈希，
-  不要猜某个文档该不该改——`BP stage` 的结果只由 lock 与文件系统的当前事实决定，
-  重跑必然得到同一个答案。
+  不要猜某个文档该不该改。
 - **不跳阶段、不合并阶段。** 不要因为「反正都要做」就连着把 flow 和 activity 一起生成。
 - **每阶段结束后重新 `BP stage`；stage 没变就停止，不重试第二次。**
-- 人中途在 `product/` 下新写的业务服务排在最后，不会打断当前这一波。这是脚本保证的，
-  **不要因为想起有新需求就跳过当前 stage 去做它**。
+- **BP 报「blueprint 脚本自身出错了」时立刻停下**，把整段原样交给人。那是母版的 bug，
+  不是文档问题——换个命令、改文档、重试都不会让它消失。
+- **清单给什么就做什么。** 人中途在 `product/` 下新写的业务服务会直接出现在 flow 层的清单里，
+  和这一波原有的服务并列，照单全收。
 
 ## 整体流程
 
@@ -36,94 +38,62 @@ blueprint 流水线的调度器：按 `BP stage` 给出的结果分派给下一�
 flowchart TD
     A[建任务清单] --> B[① BP stage]
     B --> C{stage}
-    C -->|orphaned| D[BP delete plan 生成清理清单]
-    C -->|blocked| E([停,交人执行 todo 工单])
     C -->|flow / activity / domain / code / commit| F[② 调用对应 skill]
-    C -->|ready| G([结束,没有待办])
-    D --> H([停,交人确认清理清单])
+    C -->|none| G([结束,报告告警与等人项])
     F --> I[③ 重新 BP stage]
     I --> J{④ stage 变了?}
     J -->|变了| C
     J -->|没变| K([停下报告,不重试])
 
-    classDef human fill:#fff3cd,stroke:#d39e00,stroke-width:2px
-    class E,H,K human
+    classDef default fill:#f3f6f8,stroke:#9aa8b4,color:#27313a
+    classDef human fill:#f3e6df,stroke:#c77a5c,color:#4a2c21,stroke-width:2px
+    class K human
 ```
 
-黄色节点是**交人处理的出口**。被调用的 skill 内部还各有自己的人工介入点，
-那些不在本图里——它们由那一层自己把关，你不必也不该代替人回答。
+被调用的 skill 内部各有自己的人工介入点，那些由那一层自己把关，**你不代替人回答**。
+
+`BP stage` 的输出除了 stage 本身，还可能带两段附注，**它们都不改变 stage、不打断分派**：
+
+| 附注 | 含义 | 你要做的 |
+|---|---|---|
+| 顶部 `告警` | 有对象引用关系断裂（多半是重命名后的残留） | 照常按 stage 干活，结束时转述一句 |
+| 末尾 `等人处理` | 这些对象在等人执行 `blueprint/todo/` 的工单或补表结构 | 同上；stage 已是 `none` 时，这就是要报给人的事 |
+
+需要清理孤儿时用 `BP delete plan <id>` 生成清单交人确认，那是人点头之后的事。
 
 ## 进入校验
 
-先用任务清单工具建一条任务，写清本轮的目标（例如「推进 order 的 activity 层」）。
-流水线是多轮往返的长流程，没有任务清单时容易在中途丢失上下文、重复已完成的步骤。
-
-然后跑 `BP stage`。**只看 `stage` 那一行**，按分派表执行。下面列出的行是该层的待办清单，
-直接转给被调用的 skill。
+跑 `BP stage`，**只看 `stage` 那一行**，按分派表执行。
 
 ## 完成校验
 
-1. 跑 `BP stage`。
-2. `ready` → 通过。
-
-不能通过时，报告三件事——**停在哪个 stage、属于下面哪一种原因、需要人做什么**：
-
-- `orphaned` —— 已生成清理清单，等人确认
-- `blocked` —— 等人执行 `blueprint/todo/` 下的工单
-- 被调用的 skill 停在它自己的阻塞点（人要答澄清、要过确认门）
-- 调用了 skill 但 stage 没变——直接报告「调用了 X skill 但 stage 仍为 Y」，交人判断。
-  正常情况下调用 flow skill 后 stage 应从 `flow` 变为 `activity`，没变就是 skill 没产出
-
-**原因不属于这四种就不许停。**
-
-## 完成报告
-
-每轮推进后逐条报告，不要合并成一段话：
-
-- **走了哪些 stage**，各自处理了哪些对象
-- **产出了什么**，写文件路径
-- **下一步** —— 是继续调用流水线，还是需要人做某件事（答复澄清、执行 todo、确认清理清单）
-
-被调用的 skill 各自会给出完成报告，把其中的关键结论转述上来，不要只写「已调用 X skill」。
+跑 `BP stage`，`none` → 通过。附注里的告警与等人项照实转述，它们不影响本轮是否通过。
 
 ## 详细流程
+
+### 建任务清单
+
+先建一条任务，写清本轮的目标（例如「推进 order 的 activity 层」）。
 
 ### 分派表
 
 | stage | 动作 |
 |---|---|
-| `orphaned` | `BP delete plan <id>` 生成清理清单 → 停，交人确认 |
-| `blocked` | 停，交人执行 `blueprint/todo/` 下的工单 |
 | `flow` | 调用 `flow-<<PROJECT>>` skill |
 | `activity` | 调用 `activity-<<PROJECT>>` skill |
 | `domain` | 调用 `domain-<<PROJECT>>` skill |
 | `code` | 调用 `code-<<PROJECT>>` skill |
 | `commit` | 调用 `commit-<<PROJECT>>` skill |
-| `ready` | 结束，告诉用户没有待办 |
+| `none` | 结束，告诉用户没有待办 |
 
-`BP stage` 的输出形如：
-
-```
-stage   activity
-动作    调用 activity skill
-
-order.checkout          new          流程已变更,活动需跟进
-user.register           wait_review  send-code: 2 项待答复
-```
-
-各层的行 id 粒度不同：flow 与 activity 两层都是服务 id（`<cap>.<svc>`，
-流程与活动都按服务一轮一轮地确认），code 层是活动 id。
-照着转给对应 skill 即可，不需要自己换算。
-
-取件顺序由脚本决定，你不需要理解它：
-
-```
-orphaned → blocked → flow → activity → domain → code → commit → 新服务 → ready
-```
+`stage` 那一行下面列出的是该层的待办清单，**整份原样转给被调用的 skill**。
 
 ### 一轮推进
 
 1. **① `BP stage`** 取当前 stage
-2. **② 按分派表调用对应 skill**（或停下交人）
+2. **② 按分派表调用对应 skill**
 3. **③ skill 结束后重新 `BP stage`**
-4. **④ stage 变了** → 回到 ① 继续；**没变** → 停下报告，不重试
+4. **④ stage 变了** → 回到 ① 继续；**没变** → 停下报告「调用了 X skill 但 stage 仍为 Y」，
+   交人判断，不重试第二次
+
+被调用的 skill 停在它自己的阻塞点（人要答澄清、要过确认门）时，把它给出的结论转述上来。

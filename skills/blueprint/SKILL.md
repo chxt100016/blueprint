@@ -2,7 +2,7 @@
 name: blueprint
 description: 仅在用户明确要求「初始化 blueprint」或「刷新 blueprint 生成物」时使用。不参与日常流水线——日常推进用 pipeline-<project> skill。
 license: MIT
-compatibility: 需要 Node.js 18+（脚本零 npm 依赖，只用内置模块）；schema pull 另需系统自带的 pg_dump / mysqldump / sqlite3
+compatibility: 需要 Node.js 18+（脚本零 npm 依赖，只用内置模块）；bp snapshot pull db 另需系统自带的 pg_dump / mysqldump / sqlite3
 metadata:
   version: "1.0.0"
   author: chxt100016
@@ -68,7 +68,7 @@ node $SKILL_DIR/bootstrap.mjs \
 ```
 
 脚本会：拷贝 `scripts/` 与 `templates/`；生成 `config.yaml`、
-`context/README.md`、空 `lock.json`；生成七个 `*-<project>` skill
+`context/README.md`、`context/rpc/README.md`、空 `lock.json`；生成七个 `*-<project>` skill
 （pipeline / flow / activity / domain / code / commit / ui）；
 创建空的 `blueprint/ui/`，由 ui skill 首次使用时与人讨论后建立项目级 UI 上下文；
 追加 `.gitignore`（排除 `blueprint/context/db.yaml`，该文件允许写明文凭据）。
@@ -79,7 +79,9 @@ node $SKILL_DIR/bootstrap.mjs \
 告诉用户还需要手动做三件事：
 
 1. 写 `blueprint/context/db.yaml`（不入库）
-2. 首次运行 `node blueprint/scripts/bp.mjs schema pull`
+2. 首次运行 `node blueprint/scripts/bp.mjs snapshot pull db`；
+   要让 AI 拿到外部 HTTP 接口的出入参，再往 `blueprint/context/rpc/<商业能力>/` 下贴 curl，
+   跑 `bp snapshot pull rpc`（格式见该目录 README）
 3. 按本项目实际结构填 `config.always_readable`（共享工具、类型定义那类目录），
    init 不猜这一项，留空则每次 `bp scope` 只给活动自己的目录
 
@@ -87,22 +89,6 @@ node $SKILL_DIR/bootstrap.mjs \
 目录名与文件名都用英文 kebab-case（路径即 id，`product/order/checkout.md` 就是 `order.checkout`），
 内容参考 `blueprint/templates/product.md`。写完调用 `pipeline-<project>` 开始。
 需要实现界面时，调用 `ui-<project>` 并给出一个已确认的 flow ID。
-
-### 存量项目接入
-
-已有代码的项目不要试图一次性把全仓纳入。按这个顺序：
-
-1. `init` → `schema pull`
-2. 挑 1~2 个近期在改的业务服务，人各写一份 `product/<capability>/<service>.md`
-   （一份文件写一次完整的对外交付）
-3. flow skill 按对外接口划分流程、生成活动编排 → `bp flow approve <flow>...`
-4. activity skill 生成活动文档 → `bp activity approve <service>`（一次覆盖该服务全部活动）
-5. domain skill 补齐被 `uses` 引用的领域能力 → `bp domain approve <@id>`
-6. 人手写这些活动的 codemap
-7. `bp code adopt --all` 把当前状态盖章为基线（跳过 verify，但仍校验 validate 与 codemap）
-8. 之后只在动到某个业务服务时才为其补文档并 adopt 一次
-
-未纳入的代码不会出现在 `bp stage` 与 `bp scan` 的输出中。
 
 ### 业务对象与路径
 
@@ -114,7 +100,8 @@ node $SKILL_DIR/bootstrap.mjs \
 | 领域能力 | `domain/<领域>/<name>/domain.md` | `@<领域>.<name>` |
 
 **路径即 id，双向可推。** 文档因此不声明自己属于谁，front-matter 的 `id` 只是与路径比对的冗余；
-建文档一律用 `bp new <id>`，路径由脚本算。改名等于删除重建，会走 `orphaned` 交人确认。
+建文档一律用 `bp new <id>`，路径由脚本算。改名等于删除重建，残留物会作为孤儿告警报出，
+用 `bp delete plan <id>` 生成清理清单交人确认。
 
 ---
 
@@ -193,18 +180,19 @@ front-matter 的键即允许出现的字段；`entry` 的子键即流程必填�
 两处都写必然漂移，所以同一条要求只留一处。skill 里提到模板已有的要求时，
 写「以模板为准」而不是复述一遍。
 
-### mermaid：黄色 = 人
+### mermaid：陶土橙 = 人，灰蓝 = AI
 
 七个 skill 的流程图里，凡是**要停下等人**或**交人处理**的节点，一律：
 
 ```
     P1[/人 答复澄清/]
-    classDef human fill:#fff3cd,stroke:#d39e00,stroke-width:2px
+    classDef default fill:#f3f6f8,stroke:#9aa8b4,color:#27313a
+    classDef human fill:#f3e6df,stroke:#c77a5c,color:#4a2c21,stroke-width:2px
     class P1,P2 human
 ```
 
-平行四边形取「输入」的传统含义，人的答复正是输入。图后跟一句「黄色节点是人的介入点，
-你必须停在那里等」。
+平行四边形取「输入」的传统含义，人的答复正是输入。图后跟一句「陶土橙色节点是人的介入点，
+灰蓝色节点是 AI 的工作；你必须在人的介入点停下等待」。
 
 **不要只把人写在边的标签上**（`E -->|人选通过| F`）。人在这些位置是阻塞点，
 写成边标签时它在图上不占位置，AI 顺着节点往下读就滑过去了——节点占位置，才拦得住。

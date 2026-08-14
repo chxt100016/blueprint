@@ -6,7 +6,6 @@ import { buildCommitContext } from './shared.mjs';
 export function run(cli) {
   const { repo } = ctx(cli);
   const context = buildCommitContext(repo);
-  if (cli.flag('json')) { out(JSON.stringify(context, null, 2)); return; }
   const line = (label, list) => {
     if (!list.length) return;
     out(label);

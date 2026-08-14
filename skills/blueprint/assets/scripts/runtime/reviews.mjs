@@ -41,9 +41,9 @@ export function requireCleanReviews(targets) {
 /**
  * 盖章后把各目标的澄清迁入「已确认」区,返回迁移条数。
  *
- * 三层 approve 共用。原先这里是 rmSync,整份记录连同抉择一起没了;
- * 现在改成迁区,文件留着但对判定透明——review 文件不参与哈希,
- * 写它不会让本层文档的 hash 变化,不存在「盖章反而退回 new」的回环。
+ * 三层 approve 共用。迁区而不是删文件:抉择记录要留给人回溯。
+ * 迁完对判定透明——review 文件不参与哈希,写它不会让本层文档的 hash 变化,
+ * 不存在「盖章反而把对象送回待办」的回环。
  */
 export function settleReviews(targets) {
   let total = 0;

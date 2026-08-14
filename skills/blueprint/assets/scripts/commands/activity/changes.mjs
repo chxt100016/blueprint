@@ -1,5 +1,5 @@
 import { missingForService, activityReviews, flowsOfActivity } from '../../lib/repo.mjs';
-import { dirtyFlows } from '../../lib/stage.mjs';
+import { dirtyActivities, dirtyFlows } from '../../lib/stage.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx } from '../../runtime/context.mjs';
 import { serviceOrDie } from '../../runtime/entities.mjs';
@@ -21,23 +21,19 @@ export function run(cli, [serviceId]) {
     fail(`以下业务流程尚未通过 bp flow approve: ${pending.map((d) => `${d.id}(${d.kind})`).join(', ')}`);
   }
 
-  const added = [];
-  const modified = [];
-  const unaffected = [];
+  const dirty = new Map(dirtyActivities(repo, serviceId).map((d) => [d.id, d.kind]));
+  const grouped = new Map([['新增', []], ['修改', []], ['不受影响', []]]);
   for (const activityId of service.activities) {
     const activity = repo.activities.get(activityId);
-    const spec = repo.lock.activities?.[activityId]?.spec;
     // 共用活动改一次会同时改变多个接口的行为,影响面必须摆在人眼前
     const row = [`  ${activity.slug}`, clip(activity.summary, 44) || '(未写概要)', usedBy(repo, activityId)];
-    if (!spec) added.push(row);
-    else if (spec.activity_hash !== activity.hash) modified.push(row);
-    else unaffected.push(row);
+    grouped.get(dirty.get(activityId) || '不受影响').push(row);
   }
 
   out(`业务服务  ${serviceId}`);
   out(`业务流程  ${service.flows.map((fid) => fid.split('.').pop()).join(', ')}`);
   out('');
-  for (const [title, rows] of [['新增', added], ['修改', modified], ['不受影响', unaffected]]) {
+  for (const [title, rows] of grouped) {
     if (!rows.length) continue;
     out(title);
     table(rows);

@@ -409,15 +409,3 @@ export function listFiles(p) {
       .sort();
   } catch { return []; }
 }
-
-export function walkFiles(dir, out = []) {
-  let entries = [];
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) walkFiles(full, out);
-    else out.push(full);
-  }
-  return out;
-}

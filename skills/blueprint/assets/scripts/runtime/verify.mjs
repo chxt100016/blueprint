@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 import { isDomainId, resolveScope } from '../lib/config.mjs';
 import { validateCodemap } from '../lib/codemap.mjs';
 import { validateActivity, validateDomain } from '../lib/schema.mjs';
+import { activityChange, domainChange } from '../lib/stage.mjs';
 import { errOut, out } from './cli.mjs';
 
 export function runVerify(root, cfg, scopes) {
@@ -40,14 +41,18 @@ export function implPrecheck(repo, id) {
 
   problems.push(...(isDom ? validateDomain(repo, id) : validateActivity(repo, id)));
 
-  const lockEntry = isDom ? repo.lock.domains?.[id] : repo.lock.activities?.[id];
+  // 判据与 scan 共用:「新增」= 还没盖过章,「修改」= 盖章之后又被改过
   const key = isDom ? 'domain_hash' : 'activity_hash';
-  if (!lockEntry?.spec) problems.push({ where: id, msg: '尚未 approve,不能记录实现' });
-  else if (lockEntry.spec[key] !== obj.hash) {
+  const change = isDom ? domainChange(repo, id) : activityChange(repo, id);
+  if (change === '新增') problems.push({ where: id, msg: '尚未 approve,不能记录实现' });
+  else if (change === '修改') {
     problems.push({ where: id, msg: '文档在 approve 之后被改动,需重新走 approve' });
   }
 
-  const codemap = validateCodemap(repo.root, id);
+  // 「动作」章节的编号表由模板给出(numbered=A),codemap 的 covers 与它比对:
+  // 这一层没有确认门,verify 只判编译过不过,漏实现一条动作全靠这里拦。
+  const numbered = repo.cfg.templates[isDom ? 'domain' : 'activity']?.numbered;
+  const codemap = validateCodemap(repo.root, id, { sections: obj.sections, numbered });
   problems.push(...codemap.errors);
   return { problems, files: codemap.files, obj, isDom, key };
 }

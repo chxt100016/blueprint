@@ -4,11 +4,34 @@ import {
   findSection, sectionTitles, extractFences, isTemplateNote,
   parseOrderedSteps, parseRules, parseTableFirstColumn,
 } from './parse.mjs';
-import { splitDomainId, splitUnitId, SLUG, ACTIVITY_MARK } from './config.mjs';
+import { splitDomainId, splitUnitId, serviceOf, SLUG, ACTIVITY_MARK } from './config.mjs';
 import { toArray } from './repo.mjs';
+import { loadSnapshot, gapsFor } from './db.mjs';
 
 function err(list, where, msg) {
   list.push({ where, msg });
+}
+
+// 一次进程里只读一次 snapshot:validate 无参时会走遍全部活动与领域
+let snapshotCache = null;
+function snapshotOf(root) {
+  if (!snapshotCache) snapshotCache = loadSnapshot(root);
+  return snapshotCache;
+}
+
+/**
+ * 表结构缺口。前缀固定成「表结构缺失」,因为这类错误的处理方式与文档错误完全不同:
+ * 文档错误 AI 自己改,表结构缺口要生成建表工单交给人。
+ * snapshot 没导出过时不判——空 snapshot 只说明还没跑过 pull,不代表库里没有这些表。
+ */
+function checkTableGaps(errors, repo, decl) {
+  if (!decl?.tables?.length) return;
+  const snap = snapshotOf(repo.root);
+  if (!snap.exists) return;
+  for (const gap of gapsFor(snap, decl)) {
+    const name = gap.kind === 'table' ? gap.table : `${gap.table}.${gap.column}`;
+    err(errors, gap.by, `表结构缺失: ${name}(${gap.detail})`);
+  }
 }
 
 function checkSections(errors, where, actual, expected) {
@@ -153,6 +176,22 @@ export function validateFlow(repo, flowId) {
 }
 
 /**
+ * 活动目录与「活动编排」并集的差集。判据只此一份,三处共用:
+ * validateService(活动层盖章之后)、`bp activity approve`(首次盖章前也要查)、
+ * `bp scan activity`(缺文档要报进 detail)。
+ */
+export function activityDirMismatch(repo, serviceId) {
+  const svc = repo.services.get(serviceId);
+  if (!svc) return { onlyListed: [], onlyDirs: [] };
+  const listed = new Set(svc.activityList.map((it) => it.slug));
+  const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
+  return {
+    onlyListed: [...listed].filter((slug) => !dirs.has(slug)),
+    onlyDirs: [...dirs].filter((slug) => !listed.has(slug)),
+  };
+}
+
+/**
  * 服务级校验:跨流程、跨活动才成立的事实。
  * 单个流程自身的问题在 validateFlow 里查,不在这里重复。
  */
@@ -176,15 +215,10 @@ export function validateService(repo, serviceId) {
   }
 
   // 活动目录 ↔ 各流程编排的并集,一一对应:活动层 approve 之后才校验
-  const listed = new Set(svc.activityList.map((it) => it.slug));
   if (repo.lock.services?.[serviceId]?.activity) {
-    const dirs = new Set(svc.activities.map((a) => a.split('.').pop()));
-    for (const slug of listed) {
-      if (!dirs.has(slug)) err(errors, where, `活动编排中的 \`${slug}\` 缺少 ${slug}/activity.md`);
-    }
-    for (const d of dirs) {
-      if (!listed.has(d)) err(errors, where, `活动目录 \`${d}\` 不被任何流程编排`);
-    }
+    const { onlyListed, onlyDirs } = activityDirMismatch(repo, serviceId);
+    for (const slug of onlyListed) err(errors, where, `活动编排中的 \`${slug}\` 缺少 ${slug}/activity.md`);
+    for (const slug of onlyDirs) err(errors, where, `活动目录 \`${slug}\` 不被任何流程编排`);
   }
 
   // depends_on 成环:环是服务级事实,在这里查一次,不在每个活动上重复查
@@ -251,6 +285,7 @@ export function validateActivity(repo, id) {
   checkNonEmpty(errors, where, act.sections, expected);
   checkRules(errors, where, act.sections, tpl.numbered);
   checkTables(errors, where, act.fm.tables);
+  checkTableGaps(errors, repo, act);
   return errors;
 }
 
@@ -299,24 +334,6 @@ function findCycle(repo, serviceId) {
   return cycle;
 }
 
-/** 同服务内按 depends_on 拓扑排序。 */
-export function topoSort(repo, ids) {
-  const set = new Set(ids);
-  const out = [];
-  const state = new Map();
-  const visit = (id) => {
-    if (state.get(id)) return;
-    state.set(id, 1);
-    for (const dep of repo.activities.get(id)?.depends_on || []) {
-      if (set.has(dep)) visit(dep);
-    }
-    state.set(id, 2);
-    out.push(id);
-  };
-  for (const id of [...set].sort()) visit(id);
-  return out;
-}
-
 // ------------------------------------------------------------------ domain
 
 export function validateDomain(repo, id) {
@@ -337,6 +354,7 @@ export function validateDomain(repo, id) {
   checkNonEmpty(errors, where, dom.sections, tpl.titles);
   checkRules(errors, where, dom.sections, tpl.numbered);
   checkTables(errors, where, dom.fm.tables);
+  checkTableGaps(errors, repo, dom);
 
   // 契约只增不改
   const locked = repo.lock.domains?.[id]?.spec;

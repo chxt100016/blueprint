@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseYaml, readFileSafe, parseTemplateSpec } from './parse.mjs';
+import { BpError } from './error.mjs';
 
 export const BP_DIR = 'blueprint';
 
@@ -14,7 +15,7 @@ export const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 // id 第三段的层级标记。加它是为了让 id 自解释:业务流程与业务活动都挂在服务下,
 // 若共用一个三段命名空间,解析 id 就得先查 repo 才知道是哪一层,
-// 而 status / read / delete 这些命令在 validate 之前就要解析 id,重名校验拦不住那个时间差。
+// 而 scan / read / delete 这些命令在 validate 之前就要解析 id,重名校验拦不住那个时间差。
 export const FLOW_MARK = 'flow';
 export const ACTIVITY_MARK = 'activity';
 
@@ -36,7 +37,7 @@ export function loadConfig(root) {
   const file = bpPath(root, 'config.yaml');
   const raw = readFileSafe(file);
   if (raw === null) {
-    throw new Error(`找不到 ${path.relative(process.cwd(), file)},先用 blueprint skill 初始化`);
+    throw new BpError(`找不到 ${path.relative(process.cwd(), file)},先用 blueprint skill 初始化`);
   }
   const cfg = parseYaml(raw) || {};
   cfg.layout = cfg.layout || {};
@@ -58,11 +59,11 @@ export function loadTemplateSpec(root) {
     const p = bpPath(root, 'templates', file);
     const raw = readFileSafe(p);
     if (raw === null) {
-      throw new Error(`找不到模板 ${path.relative(process.cwd(), p)},重跑 blueprint skill 的 init 可补齐`);
+      throw new BpError(`找不到模板 ${path.relative(process.cwd(), p)},重跑 blueprint skill 的 init 可补齐`);
     }
     const spec = parseTemplateSpec(raw);
     if (!spec.titles.length) {
-      throw new Error(`模板 blueprint/templates/${file} 中没有二级标题章节`);
+      throw new BpError(`模板 blueprint/templates/${file} 中没有二级标题章节`);
     }
     out[kind] = spec;
   }
@@ -73,7 +74,7 @@ export function loadTemplateSpec(root) {
 export function interpolate(str) {
   return String(str).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => {
     const v = process.env[name];
-    if (v === undefined || v === '') throw new Error(`环境变量 ${name} 未设置`);
+    if (v === undefined || v === '') throw new BpError(`环境变量 ${name} 未设置`);
     return v;
   });
 }

@@ -71,21 +71,25 @@ function main() {
   if (!fs.existsSync(config)) {
     write(config, render(path.join(ASSETS, 'config.yaml'), values));
   }
-  for (const directory of ['product', 'spec', 'domain', 'codemap', 'context', 'snapshot', 'todo/done', 'ui']) {
+  for (const directory of ['product', 'spec', 'domain', 'codemap', 'context/rpc', 'snapshot', 'todo/done', 'ui']) {
     fs.mkdirSync(blueprint(...directory.split('/')), { recursive: true });
   }
 
   const lock = blueprint('lock.json');
   if (!fs.existsSync(lock)) {
     write(lock, JSON.stringify({
-      version: 4,
+      version: 5,
       blueprint_version: VERSION,
-      services: {}, flows: {}, activities: {}, domains: {}, rejected_domains: {},
+      services: {}, flows: {}, activities: {}, domains: {},
     }, null, 2) + '\n');
   }
   const contextReadme = blueprint('context', 'README.md');
   if (!fs.existsSync(contextReadme)) {
     write(contextReadme, render(path.join(ASSETS, 'context-README.md'), values));
+  }
+  const rpcReadme = blueprint('context', 'rpc', 'README.md');
+  if (!fs.existsSync(rpcReadme)) {
+    write(rpcReadme, render(path.join(ASSETS, 'rpc-README.md'), values));
   }
 
   const gitignoreFile = path.join(root, '.gitignore');

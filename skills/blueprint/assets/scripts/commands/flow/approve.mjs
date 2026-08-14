@@ -5,7 +5,7 @@
 //
 // 准出闸门:实际发生变更的流程集合必须与命令行给出的集合完全相等。
 //
-// 这条闸门是流程层取消状态机之后唯一的兜底。人在确认门上看到的是 `bp flow changes` 列出的
+// 这条闸门是流程层唯一的兜底。人在确认门上看到的是 `bp flow changes` 列出的
 // 那几个流程,他点「通过」是对那几个流程点的;要是文件里其实还改了别的,盖章就把没人看过的
 // 改动一起放行了。多出来的报错好理解;少了也报错——skill 说改了 B 而 B 与上次确认时一字不差,
 // 说明它把改动写到了别处,那比多改更危险。
@@ -55,12 +55,25 @@ export function run(cli, ids) {
   const extra = dirty.filter((d) => !selected.includes(d.id));
   const stale = selected.filter((fid) => !dirty.some((d) => d.id === fid));
   if (extra.length || stale.length) {
+    // 两条用法失败的出路正相反,提示必须分开写:
+    // 服务级失败说明「你以为没改,其实改了」,出路是改用流程级并列全;
+    // 流程级失败说明「列漏了或列多了」,出路是核对 changes 再列一次。
+    // 共用一段文案时,服务级那条会建议再跑一遍刚刚失败的命令,AI 照做就是死循环。
+    if (!selected.length) {
+      errOut(`${serviceId} 本轮实际有流程变更,不能用「无流程变更」这条出口盖章:`);
+      for (const d of extra) errOut(`  ${d.id}  ${d.kind}`);
+      errOut('');
+      errOut(`跑 bp flow changes ${serviceId} 核对这些改动,确认后改用:`);
+      errOut(`  bp flow approve ${extra.map((d) => d.id).join(' ')}`);
+      errOut('这些改动不该存在的话,先把文件改回去,再用本条命令。');
+      process.exit(1);
+    }
     errOut('本轮确认的流程与实际变更的流程对不上:');
     for (const d of extra) errOut(`  ${d.id}  ${d.kind},但没有列在这条命令里`);
     for (const fid of stale) errOut(`  ${fid}  列在命令里,但内容与上次确认时一致`);
     errOut('');
     errOut(`先跑 bp flow changes ${serviceId} 核对,把实际改动的流程列全再确认。`);
-    errOut(`如果这一轮本就不该改流程,用 bp flow approve ${serviceId}。`);
+    if (!dirty.length) errOut(`本轮一个流程都没改的话,用 bp flow approve ${serviceId}。`);
     process.exit(1);
   }
 
@@ -82,7 +95,7 @@ export function run(cli, ids) {
       flow: { flow_hash: repo.flows.get(fid).hash, approved_at: approvedAt },
     };
   }
-  // 上游哈希记在服务上:业务描述是一份文件一个服务,不再是某个流程各认一个锚点
+  // 上游哈希记在服务上:业务描述是一份文件一个服务,不按流程各记一份
   lockData.services[serviceId] = {
     ...(lockData.services[serviceId] || {}),
     flow: { product_hash: service.product.hash, approved_at: approvedAt },

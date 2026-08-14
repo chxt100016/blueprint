@@ -4,9 +4,11 @@
 
 典型内容:
 
-- `db.yaml` —— 数据库连接。`bp schema pull` 读 `main.url`。
-- 外部系统的接口地址、约定、联系人
+- `db.yaml` —— 数据库连接。`bp snapshot pull db` 读 `main.url`。
+- `rpc/` —— 外部 HTTP 接口的 curl,`bp snapshot pull rpc` 按它采样。见该目录的 README.md。
 - 业务背景里那些「大家都知道但没写下来」的前提
+
+脚本读这里的输入、把结果写进 `blueprint/snapshot/`,skill 读的是 snapshot。
 
 ## db.yaml
 
@@ -25,5 +27,5 @@ url 的 scheme 决定用哪个导出命令,必须写对:
 
 **`db.yaml` 已被 blueprint 母版的 bootstrap 写进 `.gitignore`,不要入库。**
 
-`bp schema pull` 连的是 `main.url`,而 todo 里的 SQL 也要人在同一个库上执行。
-开发库与生产不一致时 `schema check` 的判定不可靠。
+`bp snapshot pull db` 连的是 `main.url`,而 todo 里的 SQL 也要人在同一个库上执行。
+开发库与生产不一致时 `bp validate` 的表结构比对不可靠。

@@ -16,6 +16,7 @@
 // approve 时删掉整份记录会让这些一次性蒸发,所以迁而不删。
 // 区隔靠二级标题,因此 isClean 之类的判定不必知道存档的存在,照旧只看前两区。
 import { splitSections } from './parse.mjs';
+import { BpError } from './error.mjs';
 
 export const AREA_PENDING = '待答复';
 export const AREA_ANSWERED = '已答复';
@@ -130,11 +131,6 @@ export function isClean(review) {
   return pendingItems(review).length === 0 && unresolvedItems(review).length === 0;
 }
 
-export function openCount(review) {
-  if (!review) return 0;
-  return pendingItems(review).length + unresolvedItems(review).length;
-}
-
 /** 一句话状态,给 scan 的 detail 用。 */
 export function stateLabel(review) {
   if (!review) return '';
@@ -161,7 +157,7 @@ function maxNumber(review) {
 /** 追加一条待答复的澄清问题,返回分配到的编号。 */
 export function addQuestion(review, text) {
   const clean = String(text ?? '').trim().replace(/\s*\n\s*/g, ' ');
-  if (!clean) throw new Error('澄清问题不能为空');
+  if (!clean) throw new BpError('澄清问题不能为空');
   const num = maxNumber(review) + 1;
   const label = `[Q${num}]`;
   review.areas[AREA_PENDING].push(buildItem([`- ${label} ${clean}`]));
@@ -178,11 +174,11 @@ function findIn(review, area, num) {
 export function answerQuestion(review, number, answer) {
   const num = Number(number);
   const clean = String(answer ?? '').trim();
-  if (!clean) throw new Error('答复不能为空');
+  if (!clean) throw new BpError('答复不能为空');
   const hit = findIn(review, AREA_PENDING, num);
   if (!hit) {
-    if (findIn(review, AREA_ANSWERED, num)) throw new Error(`Q${num} 已经答复过了`);
-    throw new Error(`Q${num} 不存在`);
+    if (findIn(review, AREA_ANSWERED, num)) throw new BpError(`Q${num} 已经答复过了`);
+    throw new BpError(`Q${num} 不存在`);
   }
   const [item] = hit.list.splice(hit.idx, 1);
   item.answer = clean;
@@ -195,11 +191,11 @@ export function answerQuestion(review, number, answer) {
 export function resolveQuestion(review, number, note) {
   const num = Number(number);
   const clean = String(note ?? '').trim();
-  if (!clean) throw new Error('落点不能为空');
+  if (!clean) throw new BpError('落点不能为空');
   const hit = findIn(review, AREA_ANSWERED, num);
   if (!hit) {
-    if (findIn(review, AREA_PENDING, num)) throw new Error(`Q${num} 还没有答复,不能落实`);
-    throw new Error(`Q${num} 不存在`);
+    if (findIn(review, AREA_PENDING, num)) throw new BpError(`Q${num} 还没有答复,不能落实`);
+    throw new BpError(`Q${num} 不存在`);
   }
   hit.item.note = hit.item.note ? `${hit.item.note} / ${clean}` : clean;
   hit.item.hasNote = true;
