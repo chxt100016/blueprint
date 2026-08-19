@@ -10,7 +10,7 @@ import { printErrors } from '../runtime/validation.mjs';
  */
 function snapshotNotice(root, repo) {
   const declared = [...repo.activities.values(), ...repo.domains.values()]
-    .some((decl) => decl.tables?.length);
+    .some((decl) => decl.tables?.length || decl.reads?.length);
   if (!declared || loadSnapshot(root).exists) return;
   out('');
   out('提示: snapshot 尚未生成,表结构比对已跳过。先配好 blueprint/context/db.yaml');

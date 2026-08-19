@@ -1,10 +1,10 @@
 // 模板与引用校验。所有 validate 规则集中在此。
 import path from 'node:path';
+import { findSection, sectionTitles, parseRules } from './parse.mjs';
 import {
-  findSection, sectionTitles, extractFences, isTemplateNote,
-  parseOrderedSteps, parseRules, parseTableFirstColumn,
-} from './parse.mjs';
-import { splitDomainId, splitUnitId, serviceOf, SLUG, ACTIVITY_MARK } from './config.mjs';
+  splitDomainId, splitUnitId, serviceOf, isDomainId, DOMAIN_KINDS,
+  SLUG, ACTIVITY_MARK, FLOW_TYPES,
+} from './config.mjs';
 import { toArray } from './repo.mjs';
 import { loadSnapshot, gapsFor } from './db.mjs';
 
@@ -57,34 +57,80 @@ function checkNonEmpty(errors, where, sections, titles) {
   }
 }
 
-/** numbered 来自模板的 `<!-- bp: numbered=X -->` 标记,模板没标就不校验编号。 */
+/** numbered 来自 config.mjs 的 SECTION_RULES,该文档类型没配就不校验编号。 */
 function checkRules(errors, where, sections, numbered) {
-  if (!numbered) return;
-  const { section: title, prefix } = numbered;
-  const sec = findSection(sections, title);
-  if (!sec) return;
-  const nums = parseRules(sec.body, prefix);
-  if (!nums.length) {
-    err(errors, where, `「${title}」中没有形如 \`${prefix}1\` 的条目`);
-    return;
-  }
-  for (let i = 0; i < nums.length; i++) {
-    if (nums[i] !== i + 1) {
-      err(errors, where, `「${title}」编号应从 1 连续递增,第 ${i + 1} 条为 ${prefix}${nums[i]}`);
-      break;
+  for (const { section: title, prefix } of numbered || []) {
+    const sec = findSection(sections, title);
+    if (!sec) continue;
+    const body = sec.body.trim();
+    if (body === '无') continue;
+    const nums = parseRules(body, prefix);
+    if (!nums.length) {
+      err(errors, where, `「${title}」中没有形如 \`${prefix}1\` 的条目`);
+      continue;
+    }
+    for (let i = 0; i < nums.length; i++) {
+      if (nums[i] !== i + 1) {
+        err(errors, where, `「${title}」编号应从 1 连续递增,第 ${i + 1} 条为 ${prefix}${nums[i]}`);
+        break;
+      }
     }
   }
 }
 
-function checkTables(errors, where, tables) {
+function checkTables(errors, where, tables, key = 'tables') {
   toArray(tables).forEach((t, i) => {
     if (!t || typeof t !== 'object') {
-      err(errors, where, `tables 第 ${i + 1} 项格式错误,应为 { name, columns }`);
+      err(errors, where, `${key} 第 ${i + 1} 项格式错误,应为 { name, columns }`);
       return;
     }
-    if (!t.name) err(errors, where, `tables 第 ${i + 1} 项缺少 name`);
-    if (!toArray(t.columns).length) err(errors, where, `tables 中 ${t.name || i + 1} 的 columns 为空`);
+    if (!t.name) err(errors, where, `${key} 第 ${i + 1} 项缺少 name`);
+    if (!toArray(t.columns).length) err(errors, where, `${key} 中 ${t.name || i + 1} 的 columns 为空`);
   });
+}
+
+/**
+ * 「领域依赖」一节的格式。它是活动引用领域模型的唯一出处,所以格式固定:
+ * 一个 `###` 一个模型,标题只写 id,其下两行 `- 输入:` 与 `- 输出:`。
+ * 存在性不在这儿查——识别归活动、设计归 domain 层,引用一个还没建的模型是正常状态。
+ */
+function checkDomainDeps(errors, where, act) {
+  const sec = findSection(act.sections, '领域依赖');
+  if (!sec) return; // 章节缺失由 checkSections 报
+  const body = sec.body.trim();
+  if (!body || body === '无') return;
+  const seen = new Set();
+  for (const dep of act.deps || []) {
+    if (!isDomainId(dep.id) || !splitDomainId(dep.id)[0]) {
+      err(errors, where, `「领域依赖」中 \`${dep.id}\` 不是领域模型 id(应形如 \`@<领域>.<name>\`)`);
+      continue;
+    }
+    if (seen.has(dep.id)) err(errors, where, `「领域依赖」中 \`${dep.id}\` 重复出现`);
+    seen.add(dep.id);
+    if (dep.input === null) err(errors, where, `「领域依赖」的 ${dep.id} 缺少 \`- 输入:\` 一行`);
+    if (dep.output === null) err(errors, where, `「领域依赖」的 ${dep.id} 缺少 \`- 输出:\` 一行`);
+  }
+  if (!seen.size) {
+    err(errors, where, '「领域依赖」既没有 `### <domainId>` 条目,也没有写「无」');
+  }
+}
+
+/**
+ * 一张表只能被一个聚合声明 `tables`——它是「状态变更的唯一入口」这条规矩的落点。
+ * 只读引用(领域服务的 reads、查询活动的 reads)不受限,谁都可以读。
+ */
+function checkTableOwnership(errors, repo, dom) {
+  if (dom.kind !== 'aggregate') return;
+  const mine = new Set(toArray(dom.tables).map((t) => t?.name).filter(Boolean));
+  if (!mine.size) return;
+  for (const other of repo.domains.values()) {
+    if (other.id === dom.id || other.kind !== 'aggregate') continue;
+    for (const t of toArray(other.tables)) {
+      if (t?.name && mine.has(t.name)) {
+        err(errors, dom.id, `表 ${t.name} 已被聚合 ${other.id} 声明,一张表只能被一个聚合写`);
+      }
+    }
+  }
 }
 
 /**
@@ -99,10 +145,6 @@ const SUMMARY_MAX = 40;
 function checkSummary(errors, where, summary) {
   const text = String(summary || '').trim();
   if (!text) return; // 空的情况由 checkNonEmpty 报,不重复
-  if (isTemplateNote(text)) {
-    err(errors, where, '「概要」还是模板里的说明文字,没有填写');
-    return;
-  }
   if (text.split('\n').filter((l) => l.trim()).length > 1) {
     err(errors, where, '「概要」要写成一行,不要分段');
     return;
@@ -129,54 +171,21 @@ export function validateFlow(repo, flowId) {
     err(errors, where, `front-matter 的 id (${flow.fm.id ?? '缺失'}) 与路径不一致`);
   }
 
-  // entry:一个流程一个对外接口,接口是流程的属性而不是活动的
-  const entry = flow.fm.entry || {};
-  for (const k of tpl.entryFields) {
-    if (!entry[k]) err(errors, where, `entry.${k} 必填(模板 templates/flow.md 要求)`);
+  // type + facade:一个流程一个对外接口,接口是流程的属性而不是活动的
+  if (!flow.fm.type) {
+    err(errors, where, `type 必填,可选 ${FLOW_TYPES.join(' / ')}(模板 templates/flow.md 要求)`);
+  } else if (!FLOW_TYPES.includes(flow.fm.type)) {
+    err(errors, where, `type \`${flow.fm.type}\` 未知,可选 ${FLOW_TYPES.join(' / ')}`);
   }
-  for (const k of Object.keys(entry)) {
-    if (!tpl.entryFields.includes(k)) err(errors, where, `entry 出现未定义字段 \`${k}\``);
-  }
+  if (!flow.fm.facade) err(errors, where, 'facade 必填(模板 templates/flow.md 要求)');
 
   checkNonEmpty(errors, where, flow.sections, tpl.titles);
   checkSummary(errors, where, flow.summary);
-
-  // 流程图:含且仅含一个 mermaid 代码块,首行为 flowchart。
-  // 图与「流程」步骤的逐条对应不做校验——归一化只能抹平标点空白,抹不平措辞,
-  // 图文说的是同一件事却因几个字不同而卡住 approve,代价远大于它保障的可读性。
-  const diagramSec = findSection(flow.sections, '流程图');
-  const fences = diagramSec ? extractFences(diagramSec.body).filter((f) => f.lang === 'mermaid') : [];
-  if (fences.length !== 1) {
-    err(errors, where, `「流程图」应含且仅含一个 mermaid 代码块,实际 ${fences.length} 个`);
-  } else if (!/^\s*flowchart\b/.test(fences[0].code.trim())) {
-    err(errors, where, '「流程图」的 mermaid 首行应为 `flowchart`');
-  }
-
-  // 「流程」必须是有序步骤:changes 清单要数步骤数
-  if (!parseOrderedSteps(findSection(flow.sections, '流程')?.body || '').length) {
-    err(errors, where, '「流程」中没有形如 `1. xxx` 的有序步骤');
-  }
-
-  // 活动编排:本流程按顺序用到哪些活动。引用正向存放,活动不记录自己被谁编排
-  const listSec = findSection(flow.sections, '活动编排');
-  const items = flow.activityList;
-  if (listSec && listSec.body.trim() && !items.length) {
-    err(errors, where, '「活动编排」条目应形如 `- <slug>  <在本流程中的作用>`');
-  }
-  const seen = new Set();
-  for (const it of items) {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(it.slug)) {
-      err(errors, where, `业务活动 slug \`${it.slug}\` 不是合法目录名(小写字母、数字、连字符)`);
-    }
-    if (seen.has(it.slug)) err(errors, where, `活动编排中 \`${it.slug}\` 重复`);
-    seen.add(it.slug);
-    if (it.loose) err(errors, where, `活动编排条目 \`${it.slug}\` 的 slug 与说明之间应留两个以上空格`);
-  }
   return errors;
 }
 
 /**
- * 活动目录与「活动编排」并集的差集。判据只此一份,三处共用:
+ * 活动目录与各流程「业务活动」并集的差集。判据只此一份,三处共用:
  * validateService(活动层盖章之后)、`bp activity approve`(首次盖章前也要查)、
  * `bp scan activity`(缺文档要报进 detail)。
  */
@@ -217,7 +226,7 @@ export function validateService(repo, serviceId) {
   // 活动目录 ↔ 各流程编排的并集,一一对应:活动层 approve 之后才校验
   if (repo.lock.services?.[serviceId]?.activity) {
     const { onlyListed, onlyDirs } = activityDirMismatch(repo, serviceId);
-    for (const slug of onlyListed) err(errors, where, `活动编排中的 \`${slug}\` 缺少 ${slug}/activity.md`);
+    for (const slug of onlyListed) err(errors, where, `「业务活动」列出的 \`${slug}\` 缺少 ${slug}/activity.md`);
     for (const slug of onlyDirs) err(errors, where, `活动目录 \`${slug}\` 不被任何流程编排`);
   }
 
@@ -250,17 +259,6 @@ export function validateActivity(repo, id) {
     err(errors, where, `\`${act.slug}\` 不被 ${act.service} 的任何流程编排`);
   }
 
-  // 时序图
-  const seqSec = findSection(act.sections, '时序图');
-  const fences = seqSec ? extractFences(seqSec.body).filter((f) => f.lang === 'mermaid') : [];
-  if (fences.length !== 1) {
-    err(errors, where, `「时序图」应含且仅含一个 mermaid 代码块,实际 ${fences.length} 个`);
-  } else if (!/^\s*sequenceDiagram\b/.test(fences[0].code.trim())) {
-    err(errors, where, '「时序图」的 mermaid 首行应为 `sequenceDiagram`');
-  } else {
-    checkParticipants(errors, where, fences[0].code, act);
-  }
-
   // depends_on:限同服务内。活动归属服务而不是流程,所以同服务跨流程的依赖是合法的
   for (const dep of act.depends_on) {
     const parts = typeof dep === 'string' ? splitUnitId(dep) : [];
@@ -275,37 +273,14 @@ export function validateActivity(repo, id) {
     if (!repo.activities.has(dep)) err(errors, where, `depends_on 中 \`${dep}\` 对应的 activity.md 不存在`);
   }
 
-  // uses:只校验形式,存在性由 domain 层承接
-  for (const u of act.uses) {
-    if (typeof u !== 'string' || !/^@[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(u)) {
-      err(errors, where, `uses 中 \`${u}\` 应形如 \`@<领域>.<能力名>\``);
-    }
-  }
+  checkDomainDeps(errors, where, act);
 
   checkNonEmpty(errors, where, act.sections, expected);
   checkRules(errors, where, act.sections, tpl.numbered);
-  checkTables(errors, where, act.fm.tables);
+  // 活动只声明只读引用:写由聚合负责,表结构缺口也随之归到 domain 层
+  checkTables(errors, where, act.fm.reads, 'reads');
   checkTableGaps(errors, repo, act);
   return errors;
-}
-
-function checkParticipants(errors, where, code, act) {
-  const allowed = new Set([...act.depends_on, ...act.uses]);
-  const re = /^\s*(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+?))?\s*$/gm;
-  let m;
-  while ((m = re.exec(code)) !== null) {
-    for (const name of [m[1], m[2]]) {
-      if (!name) continue;
-      const token = name.trim().replace(/^["']|["']$/g, '');
-      const looksLikeId = /^@[a-z0-9-]+\.[a-z0-9-]+$/.test(token) ||
-        new RegExp(`^[a-z0-9-]+\\.[a-z0-9-]+\\.${ACTIVITY_MARK}\\.[a-z0-9-]+$`).test(token);
-      if (!looksLikeId) continue;
-      if (token === act.id) continue;
-      if (!allowed.has(token)) {
-        err(errors, where, `时序图 participant \`${token}\` 未出现在 depends_on 或 uses 中`);
-      }
-    }
-  }
 }
 
 function findCycle(repo, serviceId) {
@@ -340,39 +315,34 @@ export function validateDomain(repo, id) {
   const errors = [];
   const dom = repo.domains.get(id);
   const where = id;
-  if (!dom) { err(errors, where, '领域能力不存在'); return errors; }
+  if (!dom) { err(errors, where, '领域模型不存在'); return errors; }
 
-  const tpl = repo.cfg.templates.domain;
+  if (!DOMAIN_KINDS.includes(dom.fm.kind)) {
+    err(errors, where, `front-matter 的 kind (${dom.fm.kind ?? '缺失'}) 应为 ${DOMAIN_KINDS.join(' 或 ')}`);
+  }
+
+  // 章节表按 kind 取:两类骨架不同,拿错模板会报一串莫名其妙的章节错
+  const tpl = repo.cfg.templates[dom.tplName];
   checkSections(errors, where, sectionTitles(dom.sections), tpl.titles);
   checkFmFields(errors, where, dom.fm, tpl.fmFields);
 
   if (dom.fm.id !== id) err(errors, where, `front-matter 的 id (${dom.fm.id ?? '缺失'}) 与路径不一致`);
   checkSummary(errors, where, dom.summary);
   const [group, name] = splitDomainId(id);
-  if (!group || !name) err(errors, where, 'id 应形如 `@<领域>.<能力名>`');
+  if (!group || !name) err(errors, where, 'id 应形如 `@<领域>.<name>`');
 
   checkNonEmpty(errors, where, dom.sections, tpl.titles);
   checkRules(errors, where, dom.sections, tpl.numbered);
-  checkTables(errors, where, dom.fm.tables);
-  checkTableGaps(errors, repo, dom);
 
-  // 契约只增不改
-  const locked = repo.lock.domains?.[id]?.spec;
-  if (locked?.contract_fields) {
-    const now = contractFields(dom);
-    for (const f of locked.contract_fields) {
-      if (!now.includes(f)) {
-        err(errors, where, `契约字段 \`${f}\` 被删除或改名。领域能力契约只增不改,破坏性变更请新建能力`);
-      }
-    }
+  if (dom.kind === 'aggregate') {
+    // 聚合完全自洽:它要的一切由调用方传入,自己不引用任何外部对象
+    checkTables(errors, where, dom.fm.tables);
+    checkTableOwnership(errors, repo, dom);
+  } else {
+    checkTables(errors, where, dom.fm.reads, 'reads');
   }
+  checkTableGaps(errors, repo, dom);
   return errors;
-}
-
-export function contractFields(dom) {
-  const sec = findSection(dom.sections, '契约');
-  if (!sec) return [];
-  return parseTableFirstColumn(sec.body).filter((f) => f && !/^-+$/.test(f));
 }
 
 // --------------------------------------------------------------------- 汇总

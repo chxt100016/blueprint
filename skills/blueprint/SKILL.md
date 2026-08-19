@@ -46,15 +46,15 @@ Node 会把软链解析成真实路径。不确定时先 `ls $SKILL_DIR/bootstra
 | 代码布局 | `layout.app` / `layout.domain` 的模板串 | 先扫一眼现有目录结构再建议 |
 | 编译命令 | `verify.app` | 从 package.json 的 scripts 里找 |
 
-布局模板串支持两组占位符：`{capability}`、`{service}`（业务活动）与 `{name}`（领域能力）。
+布局模板串支持两组占位符：`{capability}`、`{service}`（业务活动）与 `{name}`（领域模型）。
 
 ```
 src/modules/{capability}/  →  order.create.apply-coupon  得到  src/modules/order/
-src/domain/{name}/         →  @pricing.discount          得到  src/domain/discount/
+src/domain/{name}/         →  @order.order               得到  src/domain/order/
 ```
 
-注意两个「能力」分属不同层，词不通用：`{capability}` 是**商业能力**（`product/<capability>/` 目录），
-`{name}` 是**领域能力**的能力名（`domain/<domain>/<name>/`）。
+`{capability}` 是**商业能力**（`product/<capability>/` 目录），
+`{name}` 是**领域模型**的名字（`domain/<领域>/<name>/`），两者分属不同层、词不通用。
 
 ### 2. 执行
 
@@ -97,7 +97,7 @@ node $SKILL_DIR/bootstrap.mjs \
 | 业务服务 | `product/<cap>/<svc>.md`（人写）+ `spec/<cap>/<svc>/`（产出） | `<cap>.<svc>` |
 | 业务流程 | `spec/<cap>/<svc>/<flow>.md` | `<cap>.<svc>.flow.<flow>` |
 | 业务活动 | `spec/<cap>/<svc>/<act>/activity.md` | `<cap>.<svc>.activity.<act>` |
-| 领域能力 | `domain/<领域>/<name>/domain.md` | `@<领域>.<name>` |
+| 领域模型 | `domain/<领域>/<name>/domain.md` | `@<领域>.<name>` |
 
 **路径即 id，双向可推。** 文档因此不声明自己属于谁，front-matter 的 `id` 只是与路径比对的冗余；
 建文档一律用 `bp new <id>`，路径由脚本算。改名等于删除重建，残留物会作为孤儿告警报出，
@@ -137,19 +137,26 @@ node $SKILL_DIR/bootstrap.mjs --root <项目根> --project <项目名>
 
 ### 关于 templates
 
-`blueprint/templates/` 不只是给 AI 抄的样板——**章节表、哈希取材、编号前缀、front-matter 字段白名单
-全部由脚本从这些文件解析得到**（`config.mjs` 的 `loadTemplateSpec`）。改模板即改校验，不必动代码。
+`blueprint/templates/` 是 schema，不是样板：**正文只有章节标题，一个字都不多**。
+章节表与 front-matter 字段白名单由脚本从这些文件解析得到（`config.mjs` 的 `loadTemplateSpec`），
+改模板即改章节表，不必动代码。
 
-模板内的 `<!-- bp: ... -->` 标记：
+**每节写什么不写在模板里**，写在对应的 skill 里。模板里的任何东西——填写说明、表头、
+HTML 注释——都会跟着骨架落进每一份产出文档，AI 填写时连同内容一起替换掉，
+下一轮改这份文档的人再也看不到。例外是 `product.md`——它由人写，
+人写的时候不加载任何 skill，说明只能放在模板里。
 
-| 标记 | 作用 |
-|---|---|
-| `<!-- bp: no-hash -->` | 该章节不参与文档哈希(「实现提示」用它) |
-| `<!-- bp: numbered=A -->` | 该章节需形如 `A1 A2` 的连续编号 |
+编号前缀这类附加规则也因此不进模板，写在 `config.mjs` 的 `SECTION_RULES` 里：
+哪个章节需要连续编号、用哪个前缀——活动的「业务动作」是 `A`，聚合的「不变量」是 `I`、「命令」是 `C`，
+领域服务的「规则」是 `R`。那里的章节名与模板对不上会直接报错，不会静默失效。
 
-front-matter 的键即允许出现的字段；`entry` 的子键即流程必填的入口。
+**全部章节都参与文档哈希**，没有例外——文档里写下的每一个字都是确认过的内容，改了就该让人重看一遍。
 
-三份模板（flow / activity / domain）的第一节统一是 `## 概要`：单行、不超过 40 字，脚本硬校验。
+front-matter 的键即允许出现的字段。字段各自的必填与取值规则写在 `schema.mjs` 里，
+模板只定白名单——流程的 `type`（`api` / `mq` / `cron`）与 `facade` 是这样一对。
+
+四份模板（flow / activity / domain-aggregate / domain-service）的第一节统一是 `## 概要`：
+单行、不超过 40 字，脚本硬校验。
 它是各层清单唯一直接列出的正文——`bp scan flow`、`bp scan activity`、`bp domain list` 都靠它，
 人和 AI 由此在不打开文件的情况下认出一个对象。**这一节不要移位，也不要改名**，
 改了各层清单就只剩一列 id。
@@ -167,18 +174,18 @@ front-matter 的键即允许出现的字段；`entry` 的子键即流程必填�
 
 改 `assets/` 时按这两条走，它们只约束母版自身，不影响生成出来的项目。
 
-### 格式进模板，判据进 skill
+### schema 进模板，其余全进 skill
 
 | 内容 | 归属 |
 |---|---|
-| 某一节写什么、用不用表格、front-matter 字段白名单 | `assets/templates/` |
-| 什么时候该拆、复用还是新建、参考区间、代价最高的错误是什么 | `assets/skills/` |
+| 章节标题与顺序、front-matter 字段白名单 | `assets/templates/` |
+| 某一节写什么、什么时候该拆、复用还是新建、参考区间 | `assets/skills/` |
 
-界线是**这条知识产出后还需不需要**：字段级要求填完就没用了，模板注释随产出一起消化掉正合适；
-判断规则下一轮改动时还要重读，写进模板会随注释一起蒸发。
+界线是**谁读它**：模板剩下的部分只有脚本读，`loadTemplateSpec` 由此解析出校验规则；
+其余都是写给 AI 的，而 AI 动笔那一刻必然加载 skill，不一定会去读模板。
 
-两处都写必然漂移，所以同一条要求只留一处。skill 里提到模板已有的要求时，
-写「以模板为准」而不是复述一遍。
+同一条要求只留一处。skill 里不要写「以模板为准」——模板里已经没有内容可依。
+能被 validate 卡住的格式细节（字数、编号、slug 写法）连 skill 也不必写，报错会告诉它。
 
 ### mermaid：陶土橙 = 人，灰蓝 = AI
 

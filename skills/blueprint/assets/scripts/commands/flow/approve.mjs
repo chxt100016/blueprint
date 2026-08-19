@@ -82,7 +82,7 @@ export function run(cli, ids) {
   const reviews = service.flows.flatMap((fid) => flowReviews(repo, fid));
   requireCleanReviews(reviews);
 
-  // 服务级校验一并跑:活动编排与目录的对应关系是跨流程才成立的事实
+  // 服务级校验一并跑:「业务活动」与目录的对应关系是跨流程才成立的事实
   const errors = [...validateService(repo, serviceId)];
   for (const fid of service.flows) errors.push(...validateFlow(repo, fid));
   if (errors.length) { printErrors(errors); process.exit(1); }

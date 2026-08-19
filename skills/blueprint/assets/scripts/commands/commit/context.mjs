@@ -17,7 +17,7 @@ export function run(cli) {
   line('业务服务', context.services);
   line('业务流程', context.flows);
   line('业务活动', context.activities);
-  line('领域能力', context.domains);
+  line('领域模型', context.domains);
   out('');
   out(`已实现对象  ${context.implemented.length}`);
   out(`提交文件    ${context.files.length}(其中代码 ${context.impl_file_count})`);

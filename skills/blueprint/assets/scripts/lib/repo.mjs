@@ -6,7 +6,7 @@
 //               spec/<capability>/<service>/           同一个服务的产出目录
 //   flows       spec/<capability>/<service>/<flow>.md  业务流程:一个对外接口
 //   activities  spec/<capability>/<service>/<act>/     业务活动:一次状态变更
-//   domains     domain/<domain>/<name>/                领域能力(横切层)
+//   domains     domain/<domain>/<name>/                领域模型(横切层):聚合与领域服务
 //
 // **路径即 id**:`product/order/checkout.md` 就是业务服务 `order.checkout`。
 // 文档因此不需要声明自己属于谁,front-matter 的 id 只是给人看的冗余,校验时与路径比对。
@@ -23,10 +23,12 @@ import path from 'node:path';
 import {
   parseFrontMatter, splitSections, findSection, sectionsText,
   parseActivityList, listDirs, listFiles, readFileSafe, exists,
+  parseDomainDeps,
 } from './parse.mjs';
 import { hashDoc, sha256 } from './hash.mjs';
 import { parseReview } from './review.mjs';
-import { bpPath, loadConfig, FLOW_MARK, ACTIVITY_MARK } from './config.mjs';
+import { bpPath, loadConfig, domainTemplate, FLOW_MARK, ACTIVITY_MARK } from './config.mjs';
+import { parseTodoName } from './todo.mjs';
 import { BpError } from './error.mjs';
 
 export const LOCK_VERSION = 5;
@@ -125,13 +127,13 @@ function makeService(root, id, product) {
     product,
     productRel: product ? product.rel : path.join('blueprint', 'product', capability, `${slug}.md`),
     hasSpecDir: exists(dir),
-    // service.md 是轻文档:只记录服务边界与上下游,不校验、不哈希、不进 lock
+    // service.md 是轻文档:只记录服务边界,不校验、不哈希、不进 lock
     servicePath,
     serviceRel: path.relative(root, servicePath),
     hasServiceDoc: exists(servicePath),
     flows: [],
     activities: [],
-    activityList: [],   // 各流程「活动编排」的并集
+    activityList: [],   // 各流程「业务活动」的并集
   };
 }
 
@@ -167,7 +169,6 @@ function loadSpec(root, cfg, products, domainUses, activityUsers) {
           file, rel: path.relative(root, file),
           fm: doc.fm, sections: doc.sections, raw: doc.raw,
           summary: (findSection(doc.sections, '概要')?.body || '').trim(),
-          entry: doc.fm.entry || {},
           hash: hashDoc({
             fm: doc.fm,
             text: sectionsText(doc.sections, cfg.templates.flow.hashed),
@@ -175,7 +176,7 @@ function loadSpec(root, cfg, products, domainUses, activityUsers) {
           reviewPath,
           reviewRel: path.relative(root, reviewPath),
           review: readReview(reviewPath),
-          activityList: parseActivityList(findSection(doc.sections, '活动编排')?.body || ''),
+          activityList: parseActivityList(findSection(doc.sections, '业务活动')?.body || ''),
         };
         flows.set(fid, flow);
         service.flows.push(fid);
@@ -200,8 +201,12 @@ function loadSpec(root, cfg, products, domainUses, activityUsers) {
             text: sectionsText(adoc.sections, cfg.templates.activity.hashed),
           }),
           depends_on: toArray(adoc.fm.depends_on),
-          uses: toArray(adoc.fm.uses),
-          tables: toArray(adoc.fm.tables),
+          // 领域依赖登记在正文的「领域依赖」一节,不在 front-matter:
+          // 登记与契约合在一处,两边就不会不一致
+          deps: parseDomainDeps(findSection(adoc.sections, '领域依赖')?.body || ''),
+          uses: parseDomainDeps(findSection(adoc.sections, '领域依赖')?.body || '').map((d) => d.id),
+          // 活动只声明只读引用;写由聚合负责
+          reads: toArray(adoc.fm.reads),
           reviewPath: areviewPath,
           reviewRel: path.relative(root, areviewPath),
           review: readReview(areviewPath),
@@ -255,15 +260,22 @@ function loadDomains(root, cfg, domainUses) {
       const doc = readDoc(file);
       const id = `@${group}.${name}`;
       const reviewPath = path.join(dir, 'domain.review.md');
+      // kind 决定用哪套骨架,进而决定哈希取材与校验规则。写错或缺失时按聚合读,
+      // 由 validateDomain 报出来——静默换套骨架会让章节校验给出莫名其妙的错
+      const kind = doc.fm.kind === 'service' ? 'service' : 'aggregate';
+      const tplName = domainTemplate(kind);
       domains.set(id, {
         id, group, name, slug: name, dir, file, rel: path.relative(root, file),
+        kind, tplName,
         fm: doc.fm, sections: doc.sections, raw: doc.raw,
         summary: (findSection(doc.sections, '概要')?.body || '').trim(),
         hash: hashDoc({
           fm: doc.fm,
-          text: sectionsText(doc.sections, cfg.templates.domain.hashed),
+          text: sectionsText(doc.sections, cfg.templates[tplName].hashed),
         }),
-        tables: toArray(doc.fm.tables),
+        // 聚合持有表的读写权,领域服务只读
+        tables: kind === 'aggregate' ? toArray(doc.fm.tables) : [],
+        reads: kind === 'service' ? toArray(doc.fm.reads) : [],
         reviewPath,
         reviewRel: path.relative(root, reviewPath),
         review: readReview(reviewPath),
@@ -271,7 +283,7 @@ function loadDomains(root, cfg, domainUses) {
       });
     }
   }
-  // 被 uses 引用但文档不存在的领域能力
+  // 被「领域依赖」引用但文档不存在的领域模型
   const missing = [];
   for (const [id, users] of domainUses) {
     if (!domains.has(id)) missing.push({ id, usedBy: users });
@@ -286,14 +298,14 @@ function loadTodos(root) {
   const out = [];
   for (const name of listFiles(dir)) {
     if (!name.endsWith('.md')) continue;
-    const m = name.match(/^(\d{14})_(.+?)_(migration|manual)\.md$/);
+    const meta = parseTodoName(name);
     out.push({
       file: path.join(dir, name),
       rel: path.relative(root, path.join(dir, name)),
       name,
-      ts: m ? m[1] : null,
-      service: m ? m[2] : null,
-      kind: m ? m[3] : null,
+      ts: meta?.ts || null,
+      owner: meta?.owner || null,
+      kind: meta?.kind || null,
     });
   }
   return out;
@@ -316,7 +328,7 @@ export function loadRepo(root, cfg = null) {
     missingDomains, lock, todos,
     // spec 目录存在但 product 文档不存在的服务 id
     strayServices: strays,
-    // 活动 id → 编排它的流程 id 列表。正向引用写在 flow.md 的「活动编排」里,
+    // 活动 id → 编排它的流程 id 列表。正向引用写在 flow.md 的「业务活动」里,
     // 这张表由脚本反推,活动文档不记录自己被谁用(与 domainUses 同构)
     activityUsers,
   };
@@ -367,7 +379,7 @@ export function activityReviews(repo, serviceId) {
   return out;
 }
 
-/** 本服务活动 uses 引用到的领域能力(已有文档的)。 */
+/** 本服务活动的「领域依赖」引用到的领域模型(已有文档的)。 */
 export function relatedDomains(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
@@ -378,7 +390,7 @@ export function relatedDomains(repo, serviceId) {
   return [...ids].map((id) => repo.domains.get(id)).filter(Boolean);
 }
 
-/** 本服务 uses 引用了但还没有文档的领域能力。 */
+/** 本服务「领域依赖」引用了但还没有文档的领域模型。 */
 export function missingForService(repo, serviceId) {
   const svc = repo.services.get(serviceId);
   if (!svc) return [];
@@ -391,7 +403,7 @@ export function missingForService(repo, serviceId) {
   return [...out];
 }
 
-/** 引用该领域能力的服务集合。 */
+/** 引用该领域模型的服务集合。 */
 export function servicesOfDomain(repo, domain) {
   const set = new Set(domain.usedBy.map((a) => a.split('.').slice(0, 2).join('.')));
   const introduced = repo.lock.domains?.[domain.id]?.spec?.introduced_by;

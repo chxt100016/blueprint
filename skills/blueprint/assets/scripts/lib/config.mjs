@@ -2,7 +2,8 @@
 //
 // 两个「能力」分属不同层,词不通用:
 //   商业能力 capability  product/<capability>/,是业务服务的归属目录
-//   领域能力 domain      domain/<domain>/<name>/domain.md,跨服务复用的横切层
+//   领域模型 domain      domain/<domain>/<name>/domain.md,跨服务复用的横切层。
+//                        两类:聚合 aggregate 持有表的读写权,领域服务 service 只读表
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseYaml, readFileSafe, parseTemplateSpec } from './parse.mjs';
@@ -18,6 +19,17 @@ export const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // 而 scan / read / delete 这些命令在 validate 之前就要解析 id,重名校验拦不住那个时间差。
 export const FLOW_MARK = 'flow';
 export const ACTIVITY_MARK = 'activity';
+
+/**
+ * 业务流程的入口形态,即 front-matter 的 `type`。一个流程一个对外接口,
+ * 但「对外」不止 HTTP:消息消费与定时任务同样是外部可独立触发的入口,它们没有 URL。
+ * 配套的 `facade` 写这个入口对外露出的标识:
+ *
+ *   api   HTTP / RPC 接口,含外部系统打回来的异步回调    facade 形如 `POST /orders`
+ *   mq    消息消费入口                                  facade 形如 `topic order.paid`
+ *   cron  定时任务入口                                  facade 形如 `0 0 3 * * ?`
+ */
+export const FLOW_TYPES = ['api', 'mq', 'cron'];
 
 export function findRoot(start = process.cwd()) {
   let dir = path.resolve(start);
@@ -47,11 +59,47 @@ export function loadConfig(root) {
   return cfg;
 }
 
-const TEMPLATE_FILES = { flow: 'flow.md', activity: 'activity.md', domain: 'domain.md' };
+/**
+ * 文档类型 → 模板文件。领域模型有两套骨架:聚合写边界/状态/不变量/命令,
+ * 领域服务写职责/契约/规则,章节表完全不同,一个模板文件装不下两套。
+ */
+const TEMPLATE_FILES = {
+  flow: 'flow.md',
+  activity: 'activity.md',
+  'domain-aggregate': 'domain-aggregate.md',
+  'domain-service': 'domain-service.md',
+};
+
+/** 领域模型的 kind 取值,front-matter 的 `kind` 与 `bp new --kind` 共用。 */
+export const DOMAIN_KINDS = ['aggregate', 'service'];
+
+/** kind → 模板名。kind 缺失或不认识时按聚合处理,校验会把它报出来。 */
+export function domainTemplate(kind) {
+  return kind === 'service' ? 'domain-service' : 'domain-aggregate';
+}
 
 /**
- * 读 blueprint/templates/ 下的模板,推导各文档类型的章节表、哈希章节与编号规则。
+ * 章节的附加规则。模板正文里一个字都不留,所以这条规则放在这儿:
+ *
+ *   numbered  这些章节需连续编号,一个文档类型可以有多组。codemap 的 covers 与它们比对,
+ *             「每条编号都落到代码上」这道判定唯此一处。前缀各层不同:
+ *             活动的动作 A、聚合的不变量 I 与命令 C、领域服务的规则 R
+ *
+ * 章节名要与模板对得上,对不上会在 loadTemplateSpec 里报错,不静默失效。
+ */
+const SECTION_RULES = {
+  activity: { numbered: [{ section: '业务动作', prefix: 'A' }] },
+  'domain-aggregate': {
+    numbered: [{ section: '不变量', prefix: 'I' }, { section: '命令', prefix: 'C' }],
+  },
+  'domain-service': { numbered: [{ section: '规则', prefix: 'R' }] },
+};
+
+/**
+ * 读 blueprint/templates/ 下的模板,推导各文档类型的章节表与编号规则。
  * 模板缺失或没有章节时直接报错——静默回退到内置默认值会让校验与模板悄悄脱节。
+ *
+ * 全部章节都参与哈希:文档里写下的每一个字都是确认过的内容,改了就该让人重看一遍。
  */
 export function loadTemplateSpec(root) {
   const out = {};
@@ -65,6 +113,14 @@ export function loadTemplateSpec(root) {
     if (!spec.titles.length) {
       throw new BpError(`模板 blueprint/templates/${file} 中没有二级标题章节`);
     }
+    const numbered = SECTION_RULES[kind]?.numbered || null;
+    for (const rule of numbered || []) {
+      if (!spec.titles.includes(rule.section)) {
+        throw new BpError(`config.mjs 的 SECTION_RULES 提到章节「${rule.section}」,但 blueprint/templates/${file} 里没有它`);
+      }
+    }
+    spec.numbered = numbered;
+    spec.hashed = spec.titles;
     out[kind] = spec;
   }
   return out;
@@ -85,7 +141,7 @@ function fill(tpl, vars) {
 
 /**
  * 由 id 推导代码作用域目录。
- * 活动 id:`<capability>.<service>.activity.<name>`;领域能力 id:`@<domain>.<name>`。
+ * 活动 id:`<capability>.<service>.activity.<name>`;领域模型 id:`@<domain>.<name>`。
  * 只取前两段,标记段与活动名都不参与——代码目录按服务组织,不按流程。
  */
 export function resolveScope(cfg, id) {
@@ -147,16 +203,21 @@ export function idToSpecPath(id) {
 /**
  * 由 id 推导它该落在哪份文档(相对 blueprint/),`bp new` 与各处路径计算的唯一出处。
  * 返回 { kind, file, template },id 不合法返回 null。
+ * 领域模型两套骨架,`domainKind` 决定用哪个模板;路径与它无关。
  *
  * 业务服务的 id 就是 `product/<capability>/<service>.md` 的路径,反过来也成立——
  * 人写文件即建服务,不需要再声明什么。
  */
-export function idToDoc(id) {
+export function idToDoc(id, domainKind = 'aggregate') {
   const kind = idKind(id);
   if (kind === 'domain') {
     const [group, name] = splitDomainId(id);
     if (!group) return null;
-    return { kind, file: path.join('domain', group, name, 'domain.md'), template: 'domain.md' };
+    return {
+      kind,
+      file: path.join('domain', group, name, 'domain.md'),
+      template: `${domainTemplate(domainKind)}.md`,
+    };
   }
   if (kind === 'service') {
     const [capability, service] = String(id).split('.');

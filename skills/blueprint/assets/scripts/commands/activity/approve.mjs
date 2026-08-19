@@ -34,7 +34,7 @@ export function run(cli, [serviceId]) {
   // 所以这里无条件查一遍——判据共用 activityDirMismatch,不是两套实现
   const { onlyListed, onlyDirs } = activityDirMismatch(repo, serviceId);
   if (onlyListed.length || onlyDirs.length) {
-    errOut('「活动编排」与活动目录不一致:');
+    errOut('各流程「业务活动」与活动目录不一致:');
     for (const slug of onlyListed) errOut(`  编排中有但目录缺失: ${slug}`);
     for (const slug of onlyDirs) errOut(`  目录中有但不被任何流程编排: ${slug}`);
     process.exit(1);
@@ -65,5 +65,5 @@ export function run(cli, [serviceId]) {
   const missing = missingForService(repo, serviceId);
   out(`已确认 ${serviceId} 的 ${service.activities.length} 个业务活动(供 ${service.flows.length} 个流程编排)`);
   if (settled) out(`${settled} 条澄清已存档到各活动澄清记录的「已确认」`);
-  if (missing.length) out(`其中登记了 ${missing.length} 个待设计的领域能力:${missing.join(', ')}`);
+  if (missing.length) out(`其中登记了 ${missing.length} 个待设计的领域模型:${missing.join(', ')}`);
 }

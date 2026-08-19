@@ -3,19 +3,10 @@ import path from 'node:path';
 
 import { bpPath, isDomainId } from '../../lib/config.mjs';
 import { codemapPath } from '../../lib/codemap.mjs';
+import { todoPath } from '../../lib/todo.mjs';
 import { relatedDomains } from '../../lib/repo.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx } from '../../runtime/context.mjs';
-
-function sanitize(id) {
-  return String(id).replace(/^@/, 'at-').replace(/[^\w.-]/g, '-');
-}
-
-function timestamp() {
-  const date = new Date();
-  const pad = (number) => String(number).padStart(2, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-}
 
 /** 与被删服务名字接近、且还没有 spec 产出的业务服务:多半是人改名后的新名字。 */
 function similarServices(repo, service) {
@@ -34,7 +25,7 @@ export function run(cli, [id]) {
   const { root, repo } = ctx(cli);
   if (!id) fail('用法: bp delete plan <id>');
   const lines = [];
-  const file = bpPath(root, 'todo', `${timestamp()}_${sanitize(id)}_manual.md`);
+  const file = todoPath(root, id, 'manual');
 
   // 服务由 product 文档定义,文档没了就是整个服务待清理——比逐个流程报废更贴近实际:
   // 人改的是 product 里的文件名,受影响的从来不是某一个接口
@@ -55,7 +46,7 @@ export function run(cli, [id]) {
     const domains = relatedDomains(repo, id)
       .filter((domain) => domain.usedBy.every((activity) => activity.startsWith(`${id}.`)));
     if (domains.length) {
-      lines.push('## 引用关系', '', '以下领域能力仅被本服务的活动引用,清理后将变为 error:', '');
+      lines.push('## 引用关系', '', '以下领域模型仅被本服务的活动引用,清理后将变为 error:', '');
       for (const domain of domains) lines.push(`- ${domain.id}`);
       lines.push('');
     }
@@ -77,7 +68,7 @@ export function run(cli, [id]) {
     const obj = isDomain ? repo.domains.get(id) : repo.activities.get(id);
     if (!obj) fail(`找不到 ${id}`);
     lines.push(`# ${id} 清理确认`, '', '## 情况', '');
-    if (isDomain) lines.push(`领域能力 \`${id}\` 已无任何业务活动 \`uses\` 引用。`, '');
+    if (isDomain) lines.push(`领域模型 \`${id}\` 已无任何业务活动的「领域依赖」引用。`, '');
     else lines.push(`业务活动 \`${id}\` 不被 ${obj.service} 的任何流程编排。`, '');
     lines.push('若这是重命名,请改回 id 或补上引用,并删除本文件。', '');
     lines.push('## 待删除(文档层)', '');
@@ -97,7 +88,7 @@ export function run(cli, [id]) {
         if (domain && domain.usedBy.length === 1 && domain.usedBy[0] === id) orphanDomains.push(use);
       }
       if (orphanDomains.length) {
-        lines.push('## 引用关系', '', '以下领域能力仅被本活动引用,清理后将变为 error:', '');
+        lines.push('## 引用关系', '', '以下领域模型仅被本活动引用,清理后将变为 error:', '');
         for (const domain of orphanDomains) lines.push(`- ${domain}`);
         lines.push('');
       }

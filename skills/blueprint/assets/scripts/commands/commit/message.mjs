@@ -28,7 +28,7 @@ export function run(cli) {
   block('业务服务', context.services);
   block('业务流程', context.flows);
   block('业务活动', context.activities);
-  block('领域能力', context.domains);
+  block('领域模型', context.domains);
   const idWidth = rows.reduce((max, row) => Math.max(max, width(row[1]) + 2), 0);
 
   const tail = ['--- blueprint ---'];

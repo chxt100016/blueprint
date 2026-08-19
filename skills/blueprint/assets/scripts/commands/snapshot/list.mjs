@@ -13,7 +13,7 @@ export function run(cli, [type, scope]) {
     if (!snap.tables.size) { out('db 快照为空,跑 bp snapshot pull db'); return; }
     table([...snap.tables.values()]
       .sort((a, b) => a.table.localeCompare(b.table))
-      .map((t) => [t.table, `${t.columns.length} 列`]));
+      .map((t) => [t.table, `${t.columns.length} 列`, clip(t.comment, 40)]));
     return;
   }
   if (type === 'rpc') {

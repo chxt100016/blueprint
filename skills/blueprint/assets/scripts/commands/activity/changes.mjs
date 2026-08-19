@@ -1,4 +1,4 @@
-import { missingForService, activityReviews, flowsOfActivity } from '../../lib/repo.mjs';
+import { missingForService, activityReviews, flowsOfActivity, relatedDomains } from '../../lib/repo.mjs';
 import { dirtyActivities, dirtyFlows } from '../../lib/stage.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx } from '../../runtime/context.mjs';
@@ -42,14 +42,16 @@ export function run(cli, [serviceId]) {
 
   const missing = missingForService(repo, serviceId);
   if (missing.length) {
-    out('待设计的领域能力(activity 只登记引用,设计由 domain 阶段完成)');
+    out('待设计的领域模型(activity 只登记引用,设计由 domain 阶段完成)');
     for (const domain of missing) out(`  ${domain}`);
     out('');
   }
 
   printResolved(activityReviews(repo, serviceId));
 
-  const todos = repo.todos.filter((todo) => todo.service === serviceId);
+  // 工单归属服务或某个领域模型,两种都要列:migration 工单挂在领域上,它照样卡着本服务
+  const owners = new Set([serviceId, ...relatedDomains(repo, serviceId).map((d) => d.id)]);
+  const todos = repo.todos.filter((todo) => owners.has(todo.owner));
   if (todos.length) {
     out('数据库变更');
     for (const todo of todos) out(`  ${todo.rel}`);

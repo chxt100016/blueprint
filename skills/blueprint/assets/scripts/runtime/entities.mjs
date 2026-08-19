@@ -15,6 +15,6 @@ export function flowOrDie(repo, id) {
 
 export function domainOrDie(repo, id) {
   const domain = repo.domains.get(id);
-  if (!domain) fail(`找不到领域能力 ${id}`);
+  if (!domain) fail(`找不到领域模型 ${id}`);
   return domain;
 }

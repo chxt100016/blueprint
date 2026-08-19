@@ -49,9 +49,10 @@ export function implPrecheck(repo, id) {
     problems.push({ where: id, msg: '文档在 approve 之后被改动,需重新走 approve' });
   }
 
-  // 「动作」章节的编号表由模板给出(numbered=A),codemap 的 covers 与它比对:
-  // 这一层没有确认门,verify 只判编译过不过,漏实现一条动作全靠这里拦。
-  const numbered = repo.cfg.templates[isDom ? 'domain' : 'activity']?.numbered;
+  // 编号章节由模板给出(活动 A,聚合 I 与 C,领域服务 R),codemap 的 covers 与它比对:
+  // 这一层没有确认门,verify 只判编译过不过,漏实现一条全靠这里拦。
+  const tplName = isDom ? obj.tplName : 'activity';
+  const numbered = repo.cfg.templates[tplName]?.numbered;
   const codemap = validateCodemap(repo.root, id, { sections: obj.sections, numbered });
   problems.push(...codemap.errors);
   return { problems, files: codemap.files, obj, isDom, key };

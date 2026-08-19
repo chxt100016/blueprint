@@ -186,7 +186,7 @@ function scanActivity(repo) {
   for (const id of [...repo.services.keys()].sort()) {
     const svc = repo.services.get(id);
     if (!svc.flows.length) continue;
-    // 上一层没过就不进本层:流程还会变时,活动编排也还会变
+    // 上一层没过就不进本层:流程还会变时,它用到哪些活动也还会变
     if (!settled.has(id)) continue;
 
     const lock = repo.lock.services?.[id]?.activity;
@@ -214,7 +214,7 @@ function scanActivity(repo) {
 // ------------------------------------------------------------------ domain
 
 /**
- * 领域能力相对上次确认的变化;没变返回 null。
+ * 领域模型相对上次确认的变化;没变返回 null。
  * 文档还不存在(被 uses 引用但没设计)同样算「新增」——那正是本层要做的事。
  */
 export function domainChange(repo, id) {
@@ -229,20 +229,39 @@ function scanDomain(repo) {
   const out = [];
   // 被 uses 引用但还没有文档的:activity 层识别出来的待设计能力
   for (const m of repo.missingDomains) {
-    out.push(row(m.id, `未设计,引用方 ${m.usedBy.join(', ')}`));
+    out.push(row(m.id, `尚未产出文档;引用方 ${m.usedBy.join(', ')}`));
   }
   for (const id of [...repo.domains.keys()].sort()) {
     const dom = repo.domains.get(id);
     if (!dom.usedBy.length) continue; // 孤儿告警里报
     const note = isClean(dom.review) ? '' : `;待澄清 ${stateLabel(dom.review)}`;
-    if (!repo.lock.domains?.[id]?.spec) { out.push(row(id, '尚未确认契约' + note)); continue; }
-    if (domainChange(repo, id)) { out.push(row(id, '契约已更新' + note)); continue; }
-    out.push(row(id, note ? '有澄清待结清' : ''));
+    // 引用方跟着每一行走:domain 层一次只推进一个模型,拿到 id 就该能直接去读它的引用方,
+    // 不必为此把全项目的领域模型清单拉一遍
+    const by = `;引用方 ${dom.usedBy.join(', ')}`;
+    if (!repo.lock.domains?.[id]?.spec) { out.push(row(id, '文档已产出,待确认' + note + by)); continue; }
+    if (domainChange(repo, id)) { out.push(row(id, '确认后又被修改,需重新确认' + note + by)); continue; }
+    out.push(row(id, note ? '有澄清待结清' + by : ''));
   }
   return out;
 }
 
 // -------------------------------------------------------------------- code
+
+/**
+ * 能挡住这个对象的工单归属。三种写法都要认,认漏一种工单就等于没建:
+ * migration 工单由 domain 层产出、归属领域模型,活动用到它同样开不了工;
+ * manual 工单归属出问题的那个对象;`bp delete plan` 的整服务清理单归属服务。
+ */
+function todoKeys(repo, t) {
+  const keys = new Set([t.id]);
+  if (t.isDomain) {
+    for (const service of servicesOfDomain(repo, t.obj)) keys.add(service);
+  } else {
+    keys.add(t.obj.service);
+    for (const use of t.obj.uses || []) keys.add(use);
+  }
+  return keys;
+}
 
 /** 已过本层 approve、可以进入实现的对象。 */
 function implTargets(repo) {
@@ -269,8 +288,8 @@ export function scanCode(repo, snap = null) {
   const rows = [];
   const blocked = [];
   for (const t of implTargets(repo)) {
-    const services = t.isDomain ? servicesOfDomain(repo, t.obj) : [t.obj.service];
-    const todos = repo.todos.filter((x) => x.service && services.includes(x.service));
+    const keys = todoKeys(repo, t);
+    const todos = repo.todos.filter((x) => x.owner && keys.has(x.owner));
     if (todos.length) {
       blocked.push(row(t.id, `待人执行 ${todos.map((x) => x.name).join(', ')}`));
       continue;
@@ -287,17 +306,17 @@ export function scanCode(repo, snap = null) {
     // 那批 id 同时也是 domain 层的待办,而 domain 层排在 code 之前,
     // 全局判定走到 code 时它必然已经清空。单独跑 `bp scan code` 才看得到这句话。
     const missing = t.isDomain ? [] : (t.obj.uses || []).filter((u) => !repo.domains.has(u));
-    const note = missing.length ? `(领域能力 ${missing.join(', ')} 尚无文档,等 domain 阶段)` : '';
+    const note = missing.length ? `(领域模型 ${missing.join(', ')} 尚无文档,等 domain 阶段)` : '';
 
     const key = t.isDomain ? 'domain_hash' : 'activity_hash';
     if (!t.impl) { rows.push(row(t.id, '尚未实现' + note)); continue; }
     if (t.impl[key] !== t.spec[key]) {
-      rows.push(row(t.id, (t.isDomain ? '契约已更新' : '活动文档已更新') + note));
+      rows.push(row(t.id, (t.isDomain ? '契约已变更,实现需跟进' : '活动文档已变更,实现需跟进') + note));
       continue;
     }
     rows.push(row(t.id, ''));
   }
-  // 领域能力先于引用它的活动,同服务内被依赖的活动先于依赖方
+  // 领域模型先于引用它的活动,同服务内被依赖的活动先于依赖方
   const order = new Map(sortImplQueue(repo, rows.map((r) => r.id)).map((id, i) => [id, i]));
   rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   return { rows, blocked };
@@ -320,7 +339,7 @@ function sortImplQueue(repo, ids) {
     }
     out.push(id);
   };
-  // 领域能力先于引用它的活动
+  // 领域模型先于引用它的活动
   for (const id of [...set].sort((a, b) => {
     const da = a.startsWith('@') ? 0 : 1;
     const db = b.startsWith('@') ? 0 : 1;

@@ -251,44 +251,20 @@ export function sectionsText(sections, titles) {
 
 // --------------------------------------------------------------- 模板规格
 
-/** 取章节体开头的 `<!-- bp: ... -->` 标记。 */
-function parseSectionMeta(body) {
-  const out = {};
-  const m = String(body ?? '').match(/<!--\s*bp:\s*(.+?)\s*-->/);
-  if (!m) return out;
-  for (const tok of m[1].split(/[,\s]+/).filter(Boolean)) {
-    const [k, v] = tok.split('=');
-    if (k === 'no-hash') out.noHash = true;
-    else if (k === 'numbered') out.numbered = v || 'R';
-  }
-  return out;
-}
-
 /**
- * 把一份模板解析成该文档类型的校验规格。模板是章节结构与编号规则的唯一真相源,
- * 校验、哈希取材、编号前缀全部由此推导——改模板即改校验,不必动代码。
+ * 把一份模板解析成该文档类型的章节表与字段白名单:
+ * 二级标题的文字与顺序即章节表,front-matter 的键即允许出现的字段。
  *
- * 章节标记写在二级标题下的 HTML 注释里:
- *   <!-- bp: no-hash -->       该章节不参与哈希(如「实现提示」)
- *   <!-- bp: numbered=A -->    该章节需形如 A1 A2 的连续编号
- *
- * front-matter 的键即允许出现的字段;`entry` 的子键即流程必填的入口。
+ * 模板正文里没有别的东西——哈希取材与编号前缀这类附加规则在 config.mjs 的
+ * SECTION_RULES 里,不写进模板:模板的每一个字都会跟着骨架落进产出文档。
  */
 export function parseTemplateSpec(raw) {
   const { fm, hasFm, body } = parseFrontMatter(raw);
   const { sections } = splitSections(body);
-  const titles = [];
-  const hashed = [];
-  let numbered = null;
-  for (const s of sections) {
-    titles.push(s.title);
-    const meta = parseSectionMeta(s.body);
-    if (!meta.noHash) hashed.push(s.title);
-    if (meta.numbered) numbered = { section: s.title, prefix: meta.numbered };
-  }
-  const fmFields = hasFm ? Object.keys(fm) : [];
-  const entry = fm && typeof fm.entry === 'object' && fm.entry ? Object.keys(fm.entry) : [];
-  return { titles, hashed, numbered, fmFields, entryFields: entry };
+  return {
+    titles: sections.map((s) => s.title),
+    fmFields: hasFm ? Object.keys(fm) : [],
+  };
 }
 
 // ----------------------------------------------------------------- mermaid
@@ -306,20 +282,7 @@ export function extractFences(text) {
   return out;
 }
 
-/** 取「流程」章节的顶层有序步骤文本(缩进项为分支说明,不算步骤)。 */
-export function parseOrderedSteps(body) {
-  const out = [];
-  let fence = false;
-  for (const line of String(body ?? '').split('\n')) {
-    if (/^\s*```/.test(line)) { fence = !fence; continue; }
-    if (fence) continue;
-    const m = line.match(/^(\d+)\.\s+(.+?)\s*$/);
-    if (m) out.push({ no: Number(m[1]), text: m[2].trim() });
-  }
-  return out;
-}
-
-/** 取「活动编排」条目:`- <slug>  <说明>` */
+/** 取「业务活动」条目:`- <slug>  <说明>` */
 export function parseActivityList(body) {
   const out = [];
   for (const line of String(body ?? '').split('\n')) {
@@ -331,10 +294,38 @@ export function parseActivityList(body) {
   return out;
 }
 
-/** 取编号章节的编号序列。prefix 由模板的 `numbered=` 标记给出。 */
+/**
+ * 取「领域依赖」条目:一个 `###` 一个领域模型,标题即 `<domainId>`,
+ * 其下两行 `- 输入:` 与 `- 输出:`。它是活动引用领域模型的唯一出处——
+ * front-matter 不再有 uses,登记与契约合在一处,两边就不会不一致。
+ */
+export function parseDomainDeps(body) {
+  const out = [];
+  let cur = null;
+  let fence = false;
+  for (const line of String(body ?? '').split('\n')) {
+    if (/^\s*```/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const h3 = line.match(/^###\s+(.+?)\s*$/);
+    if (h3) { cur = { id: h3[1].trim(), input: null, output: null, line: null }; out.push(cur); continue; }
+    if (!cur) continue;
+    const inp = line.match(/^\s*-\s*输入\s*[:：]\s*(.*)$/);
+    if (inp) { cur.input = inp[1].trim(); continue; }
+    const oup = line.match(/^\s*-\s*输出\s*[:：]\s*(.*)$/);
+    if (oup) cur.output = oup[1].trim();
+  }
+  return out;
+}
+
+/**
+ * 取编号章节的编号序列。prefix 由 config.mjs 的 SECTION_RULES 给出。
+ *
+ * 三种写法都认:裸行 `A1 ...`、列表项 `- A1 ...`、表格首列 `| I1 | ... |`。
+ * 表格那种是必需的——聚合的不变量与命令每条有五六个属性,写成列表读不了。
+ */
 export function parseRules(body, prefix = 'R') {
   const p = String(prefix).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`^\\s*(?:[-*]\\s*)?\\*{0,2}${p}(\\d+)\\*{0,2}[\\s.:、]`);
+  const re = new RegExp(`^\\s*(?:\\|\\s*)?(?:[-*]\\s*)?\\*{0,2}${p}(\\d+)\\*{0,2}[\\s.:、|]`);
   const out = [];
   let fence = false;
   for (const line of String(body ?? '').split('\n')) {
@@ -344,42 +335,6 @@ export function parseRules(body, prefix = 'R') {
     if (m) out.push(Number(m[1]));
   }
   return out;
-}
-
-/** 取契约/输入输出表格的首列字段名。 */
-export function parseTableFirstColumn(body) {
-  const out = [];
-  let seenHeader = false;
-  for (const line of String(body ?? '').split('\n')) {
-    const t = line.trim();
-    if (!t.startsWith('|')) continue;
-    if (/^\|[\s:|-]+\|$/.test(t)) { seenHeader = true; continue; }
-    const cells = t.split('|').slice(1, -1).map((c) => c.trim());
-    if (!cells.length) continue;
-    if (!seenHeader) continue;
-    const name = cells[0].replace(/[`*]/g, '').trim();
-    if (name) out.push(name);
-  }
-  return out;
-}
-
-/**
- * 这一节还是模板原样留下的全角括号说明,没被填写过。
- *
- * 骨架期的文档要能与「填过但填错」区分开:前者是正常中间态,后者才是错误。
- * 判据是「除了全角括号包起来的说明段之外什么都没有」。
- */
-export function isTemplateNote(body) {
-  let inNote = false;
-  let sawNote = false;
-  for (const line of String(body ?? '').split('\n')) {
-    const text = line.trim();
-    if (!text) continue;
-    if (inNote) { if (text.endsWith('）')) inNote = false; continue; }
-    if (text.startsWith('（')) { sawNote = true; inNote = !text.endsWith('）'); continue; }
-    return false;
-  }
-  return sawNote;
 }
 
 // ------------------------------------------------------------------- 工具

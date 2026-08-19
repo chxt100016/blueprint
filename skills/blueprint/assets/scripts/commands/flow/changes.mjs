@@ -1,12 +1,15 @@
 // 待人确认的流程变更。按业务服务打印,因为流程层是按服务一轮一轮走的:
 // 人一次看到的应该是「这一轮动了哪几个接口」,不是某一个接口的孤立视图。
-import { findSection } from '../../lib/parse.mjs';
-import { flowReviews, flowsOfActivity } from '../../lib/repo.mjs';
+//
+// 只报动了哪几个流程,不展开流程内容:内容都在 md 里,报出路径让人自己去读。
+// 在这里再抄一遍,人要么不看要么看两遍,而两处措辞迟早漂移。
+// 活动的新增与复用同理,那是 bp activity changes 的事。
+import { flowReviews } from '../../lib/repo.mjs';
 import { dirtyFlows } from '../../lib/stage.mjs';
-import { ACTIVITY_MARK, idKind } from '../../lib/config.mjs';
+import { idKind } from '../../lib/config.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { ctx } from '../../runtime/context.mjs';
-import { clip, table } from '../../runtime/format.mjs';
+import { clip } from '../../runtime/format.mjs';
 import { printResolved } from '../../runtime/reviews.mjs';
 
 export function run(cli, [id]) {
@@ -43,38 +46,15 @@ export function run(cli, [id]) {
 
   for (const { id: fid, kind: change } of dirty) {
     const flow = repo.flows.get(fid);
-    const steps = (findSection(flow.sections, '流程')?.body || '')
-      .split('\n').filter((line) => /^\d+\./.test(line.trim()));
-    const entry = Object.entries(flow.entry || {}).map(([k, v]) => `${k} ${v}`).join('  ');
+    const entry = [flow.fm.type, flow.fm.facade].filter(Boolean).join('  ');
 
     out(`${change}  ${fid}`);
     out(`  概要      ${clip(flow.summary, 44) || '(未写)'}`);
     out(`  对外接口  ${entry || '(未声明)'}`);
-    out(`  流程步骤  ${steps.length} 步`);
-    out('');
-    for (const line of steps) out(`    ${line.trim()}`);
+    out(`  文档      ${flow.rel}`);
     out('');
 
     printResolved(flowReviews(repo, fid));
-
-    // 活动是服务级的,同一个活动可能已被本服务的其他流程编排过。
-    // 三种状态要分开显示:人要知道自己确认的是「新写一份活动文档」还是「复用已有的」。
-    const known = new Set(
-      Object.keys(repo.lock.activities || {})
-        .filter((activity) => activity.startsWith(`${serviceId}.${ACTIVITY_MARK}.`))
-        .map((activity) => activity.split('.').pop())
-    );
-    out('  活动编排');
-    const rows = [];
-    for (const item of flow.activityList) {
-      const aid = `${serviceId}.${ACTIVITY_MARK}.${item.slug}`;
-      const others = flowsOfActivity(repo, aid).filter((other) => other !== fid);
-      const state = known.has(item.slug) || others.length ? '复用' : '新增';
-      const from = others.length ? `(也被 ${others.map((f) => f.split('.').pop()).join(', ')} 编排)` : '';
-      rows.push([`    ${state}`, item.slug, `${item.summary || ''} ${from}`.trim()]);
-    }
-    table(rows);
-    out('');
   }
 
   const untouched = service.flows.filter((fid) => !allDirty.some((d) => d.id === fid));
