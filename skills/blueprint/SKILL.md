@@ -86,8 +86,8 @@ node $SKILL_DIR/bootstrap.mjs \
    init 不猜这一项，留空则每次 `bp scope` 只给活动自己的目录
 
 然后写第一个业务服务：`blueprint/product/<商业能力>/<业务服务>.md`，一份文件就是一个业务服务，
-目录名与文件名都用英文 kebab-case（路径即 id，`product/order/checkout.md` 就是 `order.checkout`），
-内容参考 `blueprint/templates/product.md`。写完调用 `pipeline-<project>` 开始。
+目录名与文件名都用英文 kebab-case（路径即 id，`product/order/checkout.md` 就是 `order.checkout`）。
+写完调用 `pipeline-<project>` 开始。
 需要实现界面时，调用 `ui-<project>` 并给出一个已确认的 flow ID。
 
 ### 业务对象与路径
@@ -143,8 +143,7 @@ node $SKILL_DIR/bootstrap.mjs --root <项目根> --project <项目名>
 
 **每节写什么不写在模板里**，写在对应的 skill 里。模板里的任何东西——填写说明、表头、
 HTML 注释——都会跟着骨架落进每一份产出文档，AI 填写时连同内容一起替换掉，
-下一轮改这份文档的人再也看不到。例外是 `product.md`——它由人写，
-人写的时候不加载任何 skill，说明只能放在模板里。
+下一轮改这份文档的人再也看不到。
 
 编号前缀这类附加规则也因此不进模板，写在 `config.mjs` 的 `SECTION_RULES` 里：
 哪个章节需要连续编号、用哪个前缀——活动的「业务动作」是 `A`，聚合的「不变量」是 `I`、「命令」是 `C`，
