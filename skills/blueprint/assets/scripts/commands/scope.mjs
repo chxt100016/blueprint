@@ -19,10 +19,11 @@ export function run(cli, [id]) {
   if (!obj) fail(`找不到 ${id}`);
 
   if (!isDomain) {
-    // 编排了本活动的流程,全部要读:同一个活动可能服务于多个接口
+    // 编排了本活动的流程给整份:同一个活动可能服务于多个接口,
+    // 入口的出入参与对外失败码映射只写在流程文档里
     for (const flowId of flowsOfActivity(repo, id)) {
       const flow = repo.flows.get(flowId);
-      if (flow) add(`${flow.rel}#流程图`);
+      if (flow) add(flow.rel);
     }
     const service = repo.services.get(obj.service);
     if (service?.hasServiceDoc) add(service.serviceRel);
