@@ -410,3 +410,18 @@ export function servicesOfDomain(repo, domain) {
   if (introduced) set.add(introduced);
   return [...set];
 }
+
+/**
+ * 活动「领域依赖」引用的全部领域模型的组合哈希,code 层拿它当上游。与 flowsHash 同构。
+ *
+ * 活动文档写的是需求不是契约(不出现命令编号、不变量编号、错误标识),
+ * 所以领域契约改了活动文档往往一个字都不用动——activity_hash 不变,
+ * 少了这道判据,调用方的实现就再也没人拉起来复核。
+ */
+export function usesHash(repo, activityId) {
+  const act = repo.activities.get(activityId);
+  if (!act) return null;
+  const parts = [...(act.uses || [])].sort()
+    .map((did) => `${did}:${repo.domains.get(did)?.hash || ''}`);
+  return sha256(parts.join('\n'));
+}

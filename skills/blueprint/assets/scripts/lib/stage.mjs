@@ -15,7 +15,7 @@
 //                    也没法交给某个 skill 处理(skill 的职责是产出文档,不是删东西)。
 //   todo 工单未执行   列在末尾。stage 已是 none 时,这一段就是该叫人的事。
 import { execFileSync } from 'node:child_process';
-import { servicesOfDomain, flowsHash } from './repo.mjs';
+import { servicesOfDomain, flowsHash, usesHash } from './repo.mjs';
 import { isClean, stateLabel } from './review.mjs';
 import { activityDirMismatch } from './schema.mjs';
 import { loadSnapshot, gapsFor } from './db.mjs';
@@ -312,6 +312,13 @@ export function scanCode(repo, snap = null) {
     if (!t.impl) { rows.push(row(t.id, '尚未实现' + note)); continue; }
     if (t.impl[key] !== t.spec[key]) {
       rows.push(row(t.id, (t.isDomain ? '契约已变更,实现需跟进' : '活动文档已变更,实现需跟进') + note));
+      continue;
+    }
+    // 领域契约改了活动文档往往一个字都不用动(活动写需求、不写命令编号与错误标识),
+    // activity_hash 判不出来。uses_hash 缺失的是本判据上线前记录的实现,不判——
+    // 否则老项目升级后整层误报,而 lock 版本不该为一个 impl 字段整体作废。
+    if (!t.isDomain && t.impl.uses_hash && t.impl.uses_hash !== usesHash(repo, t.id)) {
+      rows.push(row(t.id, '领域契约已变更,实现需跟进' + note));
       continue;
     }
     rows.push(row(t.id, ''));

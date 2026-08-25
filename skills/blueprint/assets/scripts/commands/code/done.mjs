@@ -1,4 +1,4 @@
-import { loadLock, saveLock } from '../../lib/repo.mjs';
+import { loadLock, saveLock, usesHash } from '../../lib/repo.mjs';
 import { fail, out } from '../../runtime/cli.mjs';
 import { baseCommit, ctx, nowIso } from '../../runtime/context.mjs';
 import { printErrors } from '../../runtime/validation.mjs';
@@ -18,6 +18,9 @@ export function run(cli, [id]) {
     ...(bucket[id] || {}),
     impl: {
       [key]: obj.hash,
+      // 活动另记它引用的领域契约:那些改了活动文档不会跟着变,
+      // 只有这个字段能把调用方的实现重新拉回 code 层
+      ...(isDom ? {} : { uses_hash: usesHash(repo, id) }),
       files,
       verified_at: nowIso(),
       base_commit: baseCommit(root),
