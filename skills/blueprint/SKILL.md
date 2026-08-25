@@ -17,7 +17,7 @@ metadata:
 日常推进用生成出来的 `pipeline-<project>` skill。
 
 `init` 是幂等的：生成物无条件覆盖，定制物已存在则原样保留。母版迭代期直接重跑 init
-就能把新的 `scripts/` `templates/` 与七个 skill 刷进项目，因此不另设 upgrade 命令。
+就能把新的 `scripts/` `templates/` 与八个 skill 刷进项目，因此不另设 upgrade 命令。
 
 ## 定位母版
 
@@ -42,7 +42,7 @@ Node 会把软链解析成真实路径。不确定时先 `ls $SKILL_DIR/bootstra
 
 | 项 | 说明 | 建议值 |
 |---|---|---|
-| 项目名 | 会变成七个 skill 的后缀，如 `pipeline-shop`、`ui-shop` | 取仓库目录名 |
+| 项目名 | 会变成八个 skill 的后缀，如 `pipeline-shop`、`ui-shop` | 取仓库目录名 |
 | 代码布局 | `layout.app` / `layout.domain` 的模板串 | 先扫一眼现有目录结构再建议 |
 | 编译命令 | `verify.app` | 从 package.json 的 scripts 里找 |
 
@@ -68,8 +68,8 @@ node $SKILL_DIR/bootstrap.mjs \
 ```
 
 脚本会：拷贝 `scripts/` 与 `templates/`；生成 `config.yaml`、
-`context/README.md`、`context/rpc/README.md`、空 `lock.json`；生成七个 `*-<project>` skill
-（pipeline / flow / activity / domain / code / commit / ui）；
+`context/README.md`、`context/rpc/README.md`、空 `lock.json`；生成八个 `*-<project>` skill
+（pipeline / product / flow / activity / domain / code / commit / ui）；
 创建空的 `blueprint/ui/`，由 ui skill 首次使用时与人讨论后建立项目级 UI 上下文；
 追加 `.gitignore`（排除 `blueprint/context/db.yaml`，该文件允许写明文凭据）。
 **拷贝一律用文件复制，不用模型生成。**
@@ -87,6 +87,8 @@ node $SKILL_DIR/bootstrap.mjs \
 
 然后写第一个业务服务：`blueprint/product/<商业能力>/<业务服务>.md`，一份文件就是一个业务服务，
 目录名与文件名都用英文 kebab-case（路径即 id，`product/order/checkout.md` 就是 `order.checkout`）。
+自己动笔就照 `blueprint/templates/product.md` 的章节写；想让 AI 访谈着写，调用
+`product-<project>`——它只产出这一份文档，不碰 spec 与 domain。
 写完调用 `pipeline-<project>` 开始。
 需要实现界面时，调用 `ui-<project>` 并给出一个已确认的 flow ID。
 
@@ -188,7 +190,7 @@ front-matter 的键即允许出现的字段。字段各自的必填与取值规�
 
 ### mermaid：陶土橙 = 人，灰蓝 = AI
 
-七个 skill 的流程图里，凡是**要停下等人**或**交人处理**的节点，一律：
+八个 skill 的流程图里，凡是**要停下等人**或**交人处理**的节点，一律：
 
 ```
     P1[/人 答复澄清/]

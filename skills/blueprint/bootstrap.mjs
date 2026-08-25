@@ -61,7 +61,7 @@ function main() {
   fs.rmSync(blueprint('templates'), { recursive: true, force: true });
   copy(path.join(ASSETS, 'templates'), blueprint('templates'));
 
-  for (const name of ['pipeline', 'flow', 'activity', 'domain', 'code', 'commit', 'ui']) {
+  for (const name of ['pipeline', 'product', 'flow', 'activity', 'domain', 'code', 'commit', 'ui']) {
     const target = path.join(root, '.claude', 'skills', `${name}-${project}`, 'SKILL.md');
     write(target, render(path.join(ASSETS, 'skills', `${name}.md`), values));
   }
