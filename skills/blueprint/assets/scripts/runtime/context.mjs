@@ -20,12 +20,15 @@ export function nowIso() {
   return new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 }
 
+// 原样返回,不 trim:`status --porcelain` 的状态码占固定两列,
+// 工作树改动那一列是空格,整体 trim 会把首行的前导空格削掉,后面按列切路径就会错位。
 export function git(root, args) {
   try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   } catch { return null; }
 }
 
 export function baseCommit(root) {
-  return git(root, ['rev-parse', 'HEAD']);
+  const out = git(root, ['rev-parse', 'HEAD']);
+  return out === null ? null : out.trim();
 }

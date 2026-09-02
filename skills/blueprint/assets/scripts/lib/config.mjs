@@ -88,6 +88,7 @@ export function domainTemplate(kind) {
  * 章节名要与模板对得上,对不上会在 loadTemplateSpec 里报错,不静默失效。
  */
 const SECTION_RULES = {
+  flow: { numbered: [{ section: '异常分支', prefix: 'E' }] },
   activity: { numbered: [{ section: '业务动作', prefix: 'A' }] },
   'domain-aggregate': {
     numbered: [{ section: '不变量', prefix: 'I' }, { section: '命令', prefix: 'C' }],

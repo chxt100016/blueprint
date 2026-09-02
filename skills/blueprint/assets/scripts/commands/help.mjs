@@ -38,6 +38,8 @@ export function run() {
   bp code check <id>                    记录实现前的预检
   bp code done <id>                     跑 verify,通过则记录实现
 
+  bp test <flowId>                      流程的失败路径与测试用例的对照表
+
   bp commit context                     本轮变更的结构化摘要
   bp commit message --summary "<文本>"   拼装完整提交信息
 

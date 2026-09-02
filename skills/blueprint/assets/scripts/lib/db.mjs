@@ -196,7 +196,8 @@ export function pull(root) {
 
 function urlToMysqlArgs(url) {
   const u = new URL(url);
-  const args = ['-h', u.hostname, '-P', u.port || '3306', '-u', decodeURIComponent(u.username)];
+  // url 里写了 host:port 就是要走 TCP;不加这个参数时 mysql 客户端会把 localhost 特判成 unix socket
+  const args = ['--protocol=TCP', '-h', u.hostname, '-P', u.port || '3306', '-u', decodeURIComponent(u.username)];
   if (u.password) args.push(`-p${decodeURIComponent(u.password)}`);
   args.push(u.pathname.replace(/^\//, ''));
   return args;

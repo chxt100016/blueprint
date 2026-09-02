@@ -25,6 +25,7 @@ import { run as snapshotList } from './snapshot/list.mjs';
 import { run as snapshotPull } from './snapshot/pull.mjs';
 import { run as snapshotShow } from './snapshot/show.mjs';
 import { run as stage } from './stage.mjs';
+import { run as test } from './test.mjs';
 import { run as todoPath } from './todo/path.mjs';
 import { run as validate } from './validate.mjs';
 
@@ -34,6 +35,7 @@ const COMMANDS = new Map([
   ['new', newDoc],
   ['scope', scope],
   ['validate', validate],
+  ['test', test],
   ['review ask', reviewAsk],
   ['review answer', reviewAnswer],
   ['review resolve', reviewResolve],

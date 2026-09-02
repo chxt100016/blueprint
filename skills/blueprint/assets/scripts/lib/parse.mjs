@@ -320,21 +320,30 @@ export function parseDomainDeps(body) {
 /**
  * 取编号章节的编号序列。prefix 由 config.mjs 的 SECTION_RULES 给出。
  *
- * 三种写法都认:裸行 `A1 ...`、列表项 `- A1 ...`、表格首列 `| I1 | ... |`。
- * 表格那种是必需的——聚合的不变量与命令每条有五六个属性,写成列表读不了。
+ * 四种写法都认:裸行 `A1 ...`、列表项 `- A1 ...`、表格首列 `| I1 | ... |`、标题 `### T1 ...`。
+ * 表格那种是必需的——聚合的不变量与命令每条有五六个属性,写成列表读不了;
+ * 标题那种给测试用例:一条用例带好几行输入与预期,列表项塞不下。
  */
 export function parseRules(body, prefix = 'R') {
+  return parseRuleRows(body, prefix).map((r) => r.no);
+}
+
+/**
+ * 同上,但连编号后面那串内容一起给。
+ * 清单类输出拿它当描述——光有编号排不出「E1 库存不足 → T2」这种对照表。
+ */
+export function parseRuleRows(body, prefix = 'R') {
   const p = String(prefix).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`^\\s*(?:\\|\\s*)?(?:[-*]\\s*)?\\*{0,2}${p}(\\d+)\\*{0,2}[\\s.:、|]`);
-  const out = [];
+  const re = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\|\\s*)?(?:[-*]\\s*)?\\*{0,2}${p}(\\d+)\\*{0,2}[\\s.:、|]\\s*(.*)$`);
+  const rows = [];
   let fence = false;
   for (const line of String(body ?? '').split('\n')) {
     if (/^\s*```/.test(line)) { fence = !fence; continue; }
     if (fence) continue;
     const m = line.match(re);
-    if (m) out.push(Number(m[1]));
+    if (m) rows.push({ no: Number(m[1]), text: (m[2] || '').trim() });
   }
-  return out;
+  return rows;
 }
 
 // ------------------------------------------------------------------- 工具

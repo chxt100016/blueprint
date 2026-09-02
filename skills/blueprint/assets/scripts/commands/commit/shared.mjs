@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { bpPath, ACTIVITY_MARK, FLOW_MARK } from '../../lib/config.mjs';
 import { codemapPath } from '../../lib/codemap.mjs';
-import { exists, listFiles } from '../../lib/parse.mjs';
+import { listFiles } from '../../lib/parse.mjs';
 import { git } from '../../runtime/context.mjs';
 
 function changedFiles(root) {
@@ -59,24 +59,25 @@ export function buildCommitContext(repo) {
     }
   }
 
+  // lock 是累积的:遍历它只能得到「当前处于已实现状态」的历史全集,不是本轮做了什么。
+  // 本轮范围以工作区的实际改动为准 —— 拿 changed 与各对象的实现文件取交集,
+  // 否则提交清单会膨胀成历史全量,`git add` 就等价于被明令禁止的 `git add -A`。
+  const touched = new Set(changed.map((item) => item.file));
   const implemented = [];
   const files = new Set();
-  for (const [id, entry] of Object.entries(repo.lock.activities || {})) {
-    if (entry.impl && entry.spec && entry.impl.activity_hash === entry.spec.activity_hash) {
+  const collect = (bucket, key) => {
+    for (const [id, entry] of Object.entries(bucket || {})) {
+      if (!entry.impl || !entry.spec || entry.impl[key] !== entry.spec[key]) continue;
+      const own = (entry.impl.files || []).filter((file) => touched.has(file));
+      // codemap 只改了 covers、代码没动也算本轮产出;它在 blueprint/ 下,由下面的循环收进清单
+      const codemap = path.relative(root, codemapPath(root, id)).split(path.sep).join('/');
+      if (!own.length && !touched.has(codemap)) continue;
       implemented.push(id);
-      for (const file of entry.impl.files || []) files.add(file);
+      for (const file of own) files.add(file);
     }
-  }
-  for (const [id, entry] of Object.entries(repo.lock.domains || {})) {
-    if (entry.impl && entry.spec && entry.impl.domain_hash === entry.spec.domain_hash) {
-      implemented.push(id);
-      for (const file of entry.impl.files || []) files.add(file);
-    }
-  }
-  for (const id of implemented) {
-    const codemap = codemapPath(root, id);
-    if (exists(codemap)) files.add(path.relative(root, codemap).split(path.sep).join('/'));
-  }
+  };
+  collect(repo.lock.activities, 'activity_hash');
+  collect(repo.lock.domains, 'domain_hash');
   for (const { file } of changed) {
     if (file.startsWith('blueprint/')) files.add(file);
   }
@@ -101,7 +102,7 @@ export function buildCommitContext(repo) {
     domains,
     implemented: implemented.sort(),
     impl_file_count: files.size ? [...files].filter((file) => !file.startsWith('blueprint/')).length : 0,
-    files: [...files].filter((file) => exists(path.join(root, file))).sort(),
+    files: [...files].sort(),
     untracked_code: others,
     migration: migrations.length ? migrations[migrations.length - 1] : null,
   };
